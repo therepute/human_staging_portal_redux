@@ -235,11 +235,12 @@
             <p>Please select the reason why you cannot extract this article:</p>
             <select id="unable-reason" style="width: 100%; padding: 10px; font-size: 14px; margin: 10px 0;">
                 <option value="">-- Select Reason --</option>
-                <option value="paywall">Cannot Access - Paywalled</option>
-                <option value="no_article">Cannot Access - No article exists</option>
+                <option value="paywall_no_subscription">Cannot Access - Paywall with no subscription</option>
+                <option value="subscription_not_working">Cannot Access - Subscription provided but not working</option>
+                <option value="no_article">Cannot Access - No article available/does not open</option>
                 <option value="not_english">Not English Language</option>
-                <option value="video_content">Video content, unable to extract</option>
-                <option value="other">Other (explain below)</option>
+                <option value="video_content">Video content</option>
+                <option value="other">Other: Explain</option>
             </select>
             <textarea id="unable-explanation" placeholder="Explain the issue (required for 'Other')" rows="3" style="width: 100%; padding: 10px; font-size: 14px; margin: 10px 0; display: none;"></textarea>
             <div class="modal-actions">

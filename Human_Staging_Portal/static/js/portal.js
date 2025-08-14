@@ -122,9 +122,15 @@ async function displayArticle(article) {
                 <strong>🔐 Subscription Login</strong><br>
                 <small><strong>Publication:</strong> ${cred.name || (article.publication || 'Unknown')}</small><br>
                 <small><strong>Domain:</strong> ${cred.domain || 'Unknown'}</small><br>
-                <small><strong>Email:</strong> <code>${cred.email || '—'}</code></small><br>
-                <small><strong>Password:</strong> <code>${cred.password || '—'}</code></small><br>
-                ${cred.notes ? `<small><strong>Notes:</strong> ${cred.notes}</small>` : ''}
+                <div style="margin-top:6px;">
+                    <small><strong>Email:</strong> <code>${cred.email || '—'}</code></small>
+                    <button class="btn btn-secondary copy-btn" data-value="${(cred.email || '').replace(/"/g, '&quot;')}">Copy Email</button>
+                </div>
+                <div style="margin-top:6px;">
+                    <small><strong>Password:</strong> <code>${cred.password || '—'}</code></small>
+                    <button class="btn btn-secondary copy-btn" data-value="${(cred.password || '').replace(/"/g, '&quot;')}">Copy Password</button>
+                </div>
+                ${cred.notes ? `<div style="margin-top:6px;"><small><strong>Notes:</strong> ${cred.notes}</small></div>` : ''}
             </div>
         `;
     } else if (fallbackSubscriptionHeuristic) {
@@ -154,6 +160,58 @@ async function displayArticle(article) {
         const value = Array.isArray(article.clients) ? article.clients.join(', ') : article.clients;
         priorityLine = `<p><strong>Priority:</strong> Client - ${value}</p>`;
     }
+
+    // Domain helpers
+    const getDomainFromUrl = (url) => {
+        try { const u = new URL(url); return u.hostname.replace(/^www\./, '').toLowerCase(); } catch { return ''; }
+    };
+    const articleDomain = getDomainFromUrl(article.permalink_url);
+    const isForbes = articleDomain.endsWith('forbes.com');
+
+    // URL section
+    let urlSection = '';
+    if (isForbes) {
+        const cred = article.credentials || {};
+        const email = cred.email || '';
+        const password = cred.password || '';
+        urlSection = `
+            <div class="article-url-section" style="margin-top: 10px;">
+                <p><strong>Manual Login Required (Forbes)</strong></p>
+                <div style="background:#fff7e6;padding:12px;border-radius:6px;border-left:4px solid #ff9800;">
+                    <div style="margin-bottom:8px;">
+                        1) Open a NEW browser tab, go to <strong>forbes.com</strong>, and sign in first.
+                    </div>
+                    <div style="margin-bottom:8px;">
+                        2) After login, open this article URL:
+                        <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+                            <small style="color:#666; font-style: italic;">${article.permalink_url}</small>
+                            <button class="btn btn-secondary copy-btn" data-value="${article.permalink_url.replace(/"/g, '&quot;')}">Copy Link</button>
+                        </div>
+                    </div>
+                    ${(email || password) ? `
+                    <div>
+                        <div><small><strong>Email:</strong> <code>${email || '—'}</code> <button class="btn btn-secondary copy-btn" data-value="${(email || '').replace(/"/g, '&quot;')}">Copy</button></small></div>
+                        <div><small><strong>Password:</strong> <code>${password || '—'}</code> <button class="btn btn-secondary copy-btn" data-value="${(password || '').replace(/"/g, '&quot;')}">Copy</button></small></div>
+                    </div>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+    } else {
+        urlSection = `
+            <div class="article-url-section">
+                <p><strong>Article URL:</strong></p>
+                <button class="btn btn-primary" onclick="openArticleWindow('${article.permalink_url}')" style="margin: 10px 0;">
+                    📖 Open Article in Dedicated Window
+                </button>
+                <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+                    <small style="color: #666; font-style: italic;">${article.permalink_url}</small>
+                    <button class="btn btn-secondary copy-btn" data-value="${article.permalink_url.replace(/"/g, '&quot;')}">Copy Link</button>
+                </div>
+            </div>
+        `;
+    }
+
     articleContent.innerHTML = `
         <div class="article-title">${article.title}</div>
         <div class="article-text">
@@ -163,14 +221,7 @@ async function displayArticle(article) {
             ${priorityLine}
             ${credentialInfo}
             <hr>
-            <div class="article-url-section">
-                <p><strong>Article URL:</strong></p>
-                <button class="btn btn-primary" onclick="openArticleWindow('${article.permalink_url}')" style="margin: 10px 0;">
-                    📖 Open Article in Dedicated Window
-                </button>
-                <br>
-                <small style="color: #666; font-style: italic;">${article.permalink_url}</small>
-            </div>
+            ${urlSection}
             <div class="data-status">
                 <strong>Data Status:</strong><br>
                 ✅ <strong>Have:</strong> Headline, Story_Link, Priority<br>
@@ -590,16 +641,21 @@ async function confirmUnable() {
     try {
         updateStatus('Marking as unable to extract...');
         
-        const friendly = reason === 'other' ? `Other: ${explanation}` : reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const reasonMap = {
+            paywall_no_subscription: 'Cannot Access - Paywall with no subscription',
+            subscription_not_working: 'Cannot Access - Subscription provided but not working',
+            no_article: 'Cannot Access - No article available/does not open',
+            not_english: 'Not English Language',
+            video_content: 'Video content'
+        };
+        const friendly = reason === 'other' ? `Other: ${explanation}` : (reasonMap[reason] || reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()));
         
         // Capture the full reason for the database
         let fullReason;
         if (reason === 'other') {
             fullReason = `Unable to extract - Other: ${explanation}`;
-        } else if (reason === 'login_subscription') {
-            fullReason = 'Unable to extract - Login/Subscription Not Working';
         } else {
-            fullReason = `Unable to extract - ${reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}`;
+            fullReason = `Unable to extract - ${friendly}`;
         }
         
         console.log('🚫 Attempting to mark as unable:', {
@@ -773,5 +829,51 @@ function formatDate(dateString) {
         return 'Unknown';
     }
 }
+
+async function copyToClipboard(text) {
+    // Decode common HTML entities that may be present in data-value
+    const decoded = String(text)
+        .replace(/&quot;/g, '"')
+        .replace(/&amp;/g, '&')
+        .replace(/&#39;/g, "'");
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(decoded);
+            showMessage('Copied to clipboard', 'info');
+            return;
+        }
+    } catch (e) {
+        // Fallback below
+    }
+    // Fallback: temporary textarea + execCommand
+    const ta = document.createElement('textarea');
+    ta.value = decoded;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try {
+        document.execCommand('copy');
+        showMessage('Copied to clipboard', 'info');
+    } catch (e) {
+        showMessage('Copy failed', 'error');
+    } finally {
+        document.body.removeChild(ta);
+    }
+}
+
+// Delegate copy buttons
+document.addEventListener('click', function(e) {
+    const target = e.target;
+    if (target && target.classList && target.classList.contains('copy-btn')) {
+        const value = target.getAttribute('data-value') || '';
+        if (value) {
+            copyToClipboard(value);
+        } else {
+            showMessage('Nothing to copy', 'warning');
+        }
+    }
+});
 
 console.log('✅ Portal.js loaded successfully!');
