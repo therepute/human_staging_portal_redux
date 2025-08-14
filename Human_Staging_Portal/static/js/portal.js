@@ -108,44 +108,59 @@ async function displayArticle(article) {
     console.log('📄 Displaying article:', article.title);
     currentArticle = article;
     
-    // Check if this is a subscription publication that needs credentials
-    const needsCredentials = article.subscription_source && 
+    // Determine if we have server-provided credentials and/or if this likely needs a subscription
+    const hasServerCreds = !!(article.credentials && (article.credentials.email || article.credentials.password));
+    const fallbackSubscriptionHeuristic = !!(article.subscription_source && 
                             article.subscription_source.includes('_') && 
-                            !article.subscription_source.startsWith('GN_');
+                            !article.subscription_source.startsWith('GN_'));
     
     let credentialInfo = '';
-    if (needsCredentials) {
-        // Prefer server-attached, single-entry credentials when available
-        if (article.credentials && (article.credentials.email || article.credentials.password)) {
-            const cred = article.credentials;
-            credentialInfo = `
-                <div style="background: #fff7e6; padding: 12px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #ff9800;">
-                    <strong>🔐 Subscription Login</strong><br>
-                    <small><strong>Publication:</strong> ${cred.name || (article.publication || 'Unknown')}</small><br>
-                    <small><strong>Domain:</strong> ${cred.domain || 'Unknown'}</small><br>
-                    <small><strong>Email:</strong> <code>${cred.email || '—'}</code></small><br>
-                    <small><strong>Password:</strong> <code>${cred.password || '—'}</code></small><br>
-                    ${cred.notes ? `<small><strong>Notes:</strong> ${cred.notes}</small>` : ''}
-                </div>
-            `;
-        } else {
-            credentialInfo = `
-                <div style="background: #e8f4fd; padding: 12px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #2196F3;">
-                    <strong>🔐 Subscription Required:</strong><br>
-                    <small>Check password manager for credentials to: <strong>${article.subscription_source}</strong></small>
-                </div>
-            `;
-        }
+    if (hasServerCreds) {
+        const cred = article.credentials;
+        credentialInfo = `
+            <div style="background: #fff7e6; padding: 12px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #ff9800;">
+                <strong>🔐 Subscription Login</strong><br>
+                <small><strong>Publication:</strong> ${cred.name || (article.publication || 'Unknown')}</small><br>
+                <small><strong>Domain:</strong> ${cred.domain || 'Unknown'}</small><br>
+                <small><strong>Email:</strong> <code>${cred.email || '—'}</code></small><br>
+                <small><strong>Password:</strong> <code>${cred.password || '—'}</code></small><br>
+                ${cred.notes ? `<small><strong>Notes:</strong> ${cred.notes}</small>` : ''}
+            </div>
+        `;
+    } else if (fallbackSubscriptionHeuristic) {
+        credentialInfo = `
+            <div style="background: #e8f4fd; padding: 12px; border-radius: 6px; margin: 10px 0; border-left: 4px solid #2196F3;">
+                <strong>🔐 Subscription Required:</strong><br>
+                <small>Check password manager for credentials to: <strong>${article.subscription_source}</strong></small>
+            </div>
+        `;
     }
     
     const articleContent = document.getElementById('article-content');
+
+    // Build Priority label from focus_industry or clients
+    let priorityLine = '';
+    const hasFocus = Array.isArray(article.focus_industry)
+        ? article.focus_industry.length > 0
+        : (article.focus_industry && String(article.focus_industry).trim() !== '');
+    const hasClient = Array.isArray(article.clients)
+        ? article.clients.length > 0
+        : (article.clients && String(article.clients).trim() !== '');
+
+    if (hasFocus) {
+        const value = Array.isArray(article.focus_industry) ? article.focus_industry.join(', ') : article.focus_industry;
+        priorityLine = `<p><strong>Priority:</strong> Focus Industry - ${value}</p>`;
+    } else if (hasClient) {
+        const value = Array.isArray(article.clients) ? article.clients.join(', ') : article.clients;
+        priorityLine = `<p><strong>Priority:</strong> Client - ${value}</p>`;
+    }
     articleContent.innerHTML = `
         <div class="article-title">${article.title}</div>
         <div class="article-text">
             <p><strong>Publication:</strong> ${article.publication || 'Empty - need from scraper'}</p>
             <p><strong>Published Date:</strong> ${article.published_at ? formatDate(article.published_at) : '❌ Missing - need from scraper'}</p>
-            <p><strong>Author:</strong> ${article.source_title || article.actor_name || '❌ Missing - need from scraper'}</p>
-            <p><strong>Priority:</strong> ${article.client_priority === 1 ? 'High' : 'Standard'}</p>
+            <p><strong>Author:</strong> ${article.actor_name || '❌ Missing - need from scraper'}</p>
+            ${priorityLine}
             ${credentialInfo}
             <hr>
             <div class="article-url-section">
@@ -175,17 +190,25 @@ async function displayArticle(article) {
 // Determine what fields are actually missing
 function getMissingFields(article) {
     const missing = [];
+
+    function isPublicationMissing(pub) {
+        if (!pub) return true;
+        const val = String(pub).trim().toLowerCase();
+        if (!val) return true;
+        // Treat placeholder values as missing
+        return val === 'unknown publication' || val === 'unknown' || val === 'n/a';
+    }
     
     if (!article.published_at) {
         missing.push('Date');
     }
     
-    if (!article.source_title && !article.actor_name) {
+    if (!article.actor_name) {
         missing.push('Author');
     }
     
-    // Publication might be empty string but we have the field
-    if (!article.publication || article.publication.trim() === '') {
+    // Publication considered missing if empty or placeholder (Unknown/N/A)
+    if (isPublicationMissing(article.publication)) {
         missing.push('Publication');
     }
     
@@ -225,12 +248,12 @@ async function loadRequiredFields(article) {
         }
         
         // Author field - show if source_title/actor_name missing
-        if (!article.source_title && !article.actor_name) {
+        if (!article.actor_name) {
             authorGroup.style.display = 'block';
-            console.log('👤 Author field required - source_title and actor_name are null');
+            console.log('👤 Author field required - actor_name is null');
         } else {
             authorGroup.style.display = 'none';
-            console.log('👤 Author field NOT needed - have:', article.source_title || article.actor_name);
+            console.log('👤 Author field NOT needed - have:', article.actor_name);
         }
         
         // Headline field - show if title missing (unlikely)
@@ -242,11 +265,17 @@ async function loadRequiredFields(article) {
             console.log('📰 Headline field NOT needed - have title:', article.title.substring(0, 50) + '...');
         }
         
-        // Publication field - show if empty
-        if (!article.publication || article.publication.trim() === '') {
+        // Publication field - show if empty or placeholder (Unknown/N/A)
+        const isPubMissing = (() => {
+            if (!article.publication) return true;
+            const val = String(article.publication).trim().toLowerCase();
+            return !val || val === 'unknown publication' || val === 'unknown' || val === 'n/a';
+        })();
+
+        if (isPubMissing) {
             if (publicationGroup) {
                 publicationGroup.style.display = 'block';
-                console.log('🏢 Publication field required - publication is empty');
+                console.log('🏢 Publication field required - publication is empty/unknown');
             }
         } else {
             if (publicationGroup) {
@@ -337,7 +366,7 @@ async function submitExtraction() {
         headline: currentArticle.title, // Use existing unless scraper provides
         publication: currentArticle.publication, // Use existing unless scraper provides
         date: currentArticle.published_at ? currentArticle.published_at.split('T')[0] : null, // Use existing unless scraper provides
-        author: currentArticle.source_title || currentArticle.actor_name, // Use existing unless scraper provides
+        author: currentArticle.actor_name || currentArticle.source_title, // Prefer actor_name from soup_dedupe
         
         duration_sec: null // Will add timer later
     };
@@ -502,6 +531,15 @@ function showUnableToExtractModal() {
     document.getElementById('unable-reason').value = '';
     document.getElementById('unable-explanation').style.display = 'none';
     document.getElementById('unable-explanation').value = '';
+    
+    // Add quick preset for subscription/login issues
+    const reasonSelect = document.getElementById('unable-reason');
+    if (reasonSelect && !Array.from(reasonSelect.options).some(o => o.value === 'login_subscription')) {
+        const opt = document.createElement('option');
+        opt.value = 'login_subscription';
+        opt.text = 'Login/Subscription Not Working';
+        reasonSelect.add(opt, reasonSelect.options[1] || null);
+    }
 }
 
 function closeUnableModal() {
@@ -552,14 +590,17 @@ async function confirmUnable() {
     try {
         updateStatus('Marking as unable to extract...');
         
-        const errorMessage = reason === 'other' ? 
-            `Other: ${explanation}` : 
-            reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+        const friendly = reason === 'other' ? `Other: ${explanation}` : reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
         
         // Capture the full reason for the database
-        const fullReason = reason === 'other' ? 
-            `Unable to extract - Other: ${explanation}` : 
-            `Unable to extract - ${reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}`;
+        let fullReason;
+        if (reason === 'other') {
+            fullReason = `Unable to extract - Other: ${explanation}`;
+        } else if (reason === 'login_subscription') {
+            fullReason = 'Unable to extract - Login/Subscription Not Working';
+        } else {
+            fullReason = `Unable to extract - ${reason.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase())}`;
+        }
         
         console.log('🚫 Attempting to mark as unable:', {
             task_id: currentArticle.id,
@@ -590,7 +631,7 @@ async function confirmUnable() {
         const result = await response.json();
         
         if (result.success) {
-            showMessage(`🚫 Marked as unable to extract: ${errorMessage}`, 'info');
+            showMessage(`🚫 Marked as unable to extract: ${friendly}`, 'info');
             
             // IMMEDIATELY close modal and clear current article
             closeUnableModal();

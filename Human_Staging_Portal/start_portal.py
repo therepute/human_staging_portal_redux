@@ -44,7 +44,7 @@ def main():
         # Start the FastAPI server
         subprocess.run([
             sys.executable, "-m", "uvicorn", 
-            "main_api:app",
+            "Human_Staging_Portal.main_api:app",
             "--host", host,
             "--port", str(port),
             "--reload"

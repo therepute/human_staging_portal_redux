@@ -34,6 +34,27 @@ db_connector: Optional[DatabaseConnector] = None
 subscription_credentials_index: Dict[str, Dict[str, Any]] = {}
 subscription_name_index: Dict[str, Dict[str, Any]] = {}
 
+# In-memory recent task tracker to avoid re-serving the same article immediately
+RECENT_WINDOW_SECONDS = 600  # 10 minutes
+recent_tasks_by_scraper: Dict[str, Dict[str, float]] = {}
+
+def _mark_recent(scraper_id: str, task_id: str) -> None:
+    import time
+    bucket = recent_tasks_by_scraper.setdefault(scraper_id, {})
+    bucket[task_id] = time.time()
+
+def _prune_and_is_recent(scraper_id: str, task_id: str) -> bool:
+    import time
+    now = time.time()
+    bucket = recent_tasks_by_scraper.get(scraper_id)
+    if not bucket:
+        return False
+    # Prune
+    expired = [tid for tid, ts in bucket.items() if now - ts > RECENT_WINDOW_SECONDS]
+    for tid in expired:
+        bucket.pop(tid, None)
+    return task_id in bucket
+
 
 def _normalize_domain(domain: str) -> str:
     """Return a normalized registrable domain (strip protocol, path, and common subdomains)."""
@@ -261,16 +282,20 @@ async def health_check(db: DatabaseConnector = Depends(get_db)):
 async def get_next_task(scraper_id: str, db: DatabaseConnector = Depends(get_db)):
     """Get the next highest priority task for a scraper"""
     try:
-        # Get available tasks
-        tasks = await db.get_available_tasks(limit=1)
+        # Get a batch of available tasks then filter out recently served
+        tasks = await db.get_available_tasks(limit=50)
         
         if not tasks:
-            return TaskResponse(
-                success=False,
-                message="No tasks available at this time"
-            )
+            # Align with frontend expectation: return 404 when no tasks
+            raise HTTPException(status_code=404, detail="No tasks available at this time")
         
-        task = tasks[0]
+        # Filter out tasks recently served to this scraper (assignment or completion)
+        filtered = [t for t in tasks if not _prune_and_is_recent(scraper_id, t.get("id"))]
+
+        if not filtered:
+            return TaskResponse(success=False, message="No tasks available at this time")
+
+        task = filtered[0]
         task_id = task["id"]
         
         # Try to assign the task
@@ -280,11 +305,15 @@ async def get_next_task(scraper_id: str, db: DatabaseConnector = Depends(get_db)
             # Add assignment metadata
             task["assigned_at"] = datetime.now(timezone.utc).isoformat()
             task["scraper_id"] = scraper_id
+            # Mark recent to reduce immediate reselection
+            _mark_recent(scraper_id, task_id)
             # Attach subscription credentials if available
             try:
+                # Use permalink domain first; fallback to publication name
                 cred = _find_credentials_for_article(task.get("permalink_url"), task.get("publication"))
+                if not cred and task.get("source_url"):
+                    cred = _find_credentials_for_article(task.get("source_url"), task.get("publication"))
                 if cred:
-                    # Only include minimal, single-entry credentials
                     task["credentials"] = {
                         "name": cred.get("name"),
                         "domain": cred.get("domain"),
@@ -360,6 +389,8 @@ async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector
         logger.info(f"✅ Database submit_extraction returned: {success}")
         
         if success:
+            # Mark as recent completion to avoid re-serving due to eventual consistency
+            _mark_recent(submission.scraper_id, submission.task_id)
             return {
                 "success": True,
                 "message": f"Task {submission.task_id} submitted successfully",
@@ -391,6 +422,8 @@ async def fail_task(failure: FailureRequest, db: DatabaseConnector = Depends(get
         )
         
         if success:
+            # Mark as recent failure to avoid re-serving
+            _mark_recent(failure.scraper_id, failure.task_id)
             return {
                 "success": True,
                 "message": f"Task {failure.task_id} marked as failed",

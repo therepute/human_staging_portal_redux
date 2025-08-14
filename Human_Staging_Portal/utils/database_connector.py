@@ -36,23 +36,50 @@ class DatabaseConnector:
         Handles both boolean True and string "TRUE" values for WF_Pre_Check_Complete
         """
         try:
-            # Query for articles ready for human extraction (exclude completed ones)
+            # First fetch a superset (since some PostgREST operators aren't available in this client)
             response = self.client.table(self.staging_table).select(
-                "id, title, permalink_url, published_at, source_title, source_url, "
-                "summary, content, subscription_source, source, client_priority, "
+                "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
+                "summary, content, subscription_source, source, client_priority, focus_industry, "
                 "headline_relevance, pub_tier, publication, clients, retry_count, "
-                "next_retry_at, last_modified, created_at"
-            ).eq("extraction_path", 2).or_(
-                "WF_Pre_Check_Complete.eq.true,WF_Pre_Check_Complete.eq.TRUE"
-            ).or_(
-                "WF_Extraction_Complete.is.null,WF_Extraction_Complete.eq.false"
-            ).order("client_priority", desc=True).order("created_at", desc=True).limit(limit).execute()
-            
-            if response.data:
-                logger.info(f"Found {len(response.data)} available tasks")
-                return response.data
+                "WF_Pre_Check_Complete, WF_Extraction_Complete, next_retry_at, last_modified, created_at"
+            ).eq("extraction_path", 2).order("client_priority", desc=True).order("created_at", desc=True).limit(200).execute()
+
+            rows: List[Dict[str, Any]] = response.data or []
+
+            # Post-filter to emulate: WF_Pre_Check_Complete in [True, "TRUE"] and (WF_Extraction_Complete is null or false)
+            filtered: List[Dict[str, Any]] = []
+            for row in rows:
+                wf_pre = row.get("WF_Pre_Check_Complete")
+                wf_done = row.get("WF_Extraction_Complete")
+                pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
+                not_done = (wf_done is None) or (wf_done is False)
+                if pre_ok and not_done:
+                    filtered.append(row)
+
+            if filtered:
+                # Custom prioritization:
+                # 1) client_priority DESC
+                # 2) focus_industry present (non-null/non-empty) first
+                # 3) created_at DESC
+                def has_focus_industry(row: Dict[str, Any]) -> int:
+                    fi = row.get("focus_industry")
+                    if fi is None:
+                        return 0
+                    if isinstance(fi, list):
+                        return 1 if len(fi) > 0 else 0
+                    return 1 if str(fi).strip() != "" else 0
+
+                def priority_tuple(row: Dict[str, Any]):
+                    client_score = row.get("client_priority") or 0
+                    focus_score = has_focus_industry(row)
+                    created = row.get("created_at") or ""
+                    return (client_score, focus_score, created)
+
+                filtered_sorted = sorted(filtered, key=priority_tuple, reverse=True)
+                logger.info(f"Found {len(filtered_sorted)} available tasks (post-filtered from {len(rows)}); returning top {limit}")
+                return filtered_sorted[:limit]
             else:
-                logger.info("No available tasks found")
+                logger.info("No available tasks found after filtering")
                 return []
                 
         except Exception as e:
@@ -66,16 +93,21 @@ class DatabaseConnector:
         """
         try:
             # Verify the task exists and is available (not completed)
-            response = self.client.table(self.staging_table).select("id").eq("id", task_id).eq("extraction_path", 2).or_(
-                "WF_Extraction_Complete.is.null,WF_Extraction_Complete.eq.false"
-            ).limit(1).execute()
-            
-            if response.data:
-                logger.info(f"Task {task_id} assigned to scraper {scraper_id} (simplified mode)")
-                return True
-            else:
-                logger.warning(f"Task {task_id} not found or not available for assignment")
+            response = self.client.table(self.staging_table).select("id, WF_Extraction_Complete, extraction_path").eq("id", task_id).limit(1).execute()
+
+            if not response.data:
+                logger.warning(f"Task {task_id} not found for assignment")
                 return False
+
+            row = response.data[0]
+            if row.get("extraction_path") != 2:
+                logger.warning(f"Task {task_id} extraction_path != 2")
+                return False
+            if row.get("WF_Extraction_Complete") is True:
+                logger.warning(f"Task {task_id} already completed")
+                return False
+            logger.info(f"Task {task_id} assigned to scraper {scraper_id} (simplified mode)")
+            return True
                 
         except Exception as e:
             logger.error(f"Error checking task {task_id}: {e}")
@@ -147,7 +179,8 @@ class DatabaseConnector:
             }
             logger.info(f"🔄 Updating soup_dedupe with: {update_data}")
             
-            update_response = self.client.table(self.staging_table).update(update_data).eq("id", task_id).execute()
+            # Double-guard: also set extraction_path=3 on completion to remove from queue
+            update_response = self.client.table(self.staging_table).update({**update_data, "extraction_path": 3}).eq("id", task_id).execute()
             
             logger.info(f"🔄 Update response: {update_response}")
             
@@ -175,9 +208,11 @@ class DatabaseConnector:
             current_time = datetime.now(timezone.utc).isoformat()
             
             # Mark as extraction complete (even though failed) to remove from queue
+            # Use columns that exist in the current schema (fallback from missing WF_Extraction_Complete_Explanation)
             update_data = {
                 "WF_Extraction_Complete": True,  # Mark as processed/complete
-                "WF_Extraction_Complete_Explanation": error_message,  # Capture rejection reason
+                "wf_extraction_failure": error_message,  # Capture rejection reason (existing column)
+                "wf_timestamp_extraction_failure": current_time,  # Failure timestamp
                 "last_modified": current_time,
                 "WF_TIMESTAMP_Extraction_Complete": current_time  # Set completion timestamp
             }
@@ -191,7 +226,8 @@ class DatabaseConnector:
             except Exception as e:
                 logger.warning(f"Could not update retry_count for {task_id}: {e}")
             
-            update_response = self.client.table(self.staging_table).update(update_data).eq("id", task_id).execute()
+            # Double-guard: also set extraction_path=3 to remove from queue
+            update_response = self.client.table(self.staging_table).update({**update_data, "extraction_path": 3}).eq("id", task_id).execute()
             
             if update_response.data:
                 logger.info(f"Marked task {task_id} as unable to extract (WF_Extraction_Complete=True): {error_message}")
