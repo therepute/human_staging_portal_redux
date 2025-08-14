@@ -221,6 +221,16 @@ Human_Staging_Portal/
 - **Interface**: Retool dual-window system
 - **Monitoring**: FastAPI endpoints for system health
 
+## Deploy
+
+This repo includes a `Procfile` with the start command:
+
+```
+web: uvicorn main_api:app --host 0.0.0.0 --port ${PORT:-8000}
+```
+
+Set `SUPABASE_URL` and `SUPABASE_ANON_KEY` as environment variables on your platform. The app root for deployment is the `Human_Staging_Portal/` subdirectory.
+
 ---
 
 **Human Staging Portal v1.0** - Ready for Retool interface development 🎯 
