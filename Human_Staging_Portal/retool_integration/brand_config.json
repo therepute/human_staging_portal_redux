@@ -1,0 +1,274 @@
+{
+  "reputeai_brand_config": {
+    "name": "ReputeAI & Valentine Advisors Brand Theme",
+    "description": "Official brand colors for Human Staging Portal Retool interface",
+    
+    "core_colors": {
+      "primary": "#fc5f36",
+      "primary_light": "#fda790", 
+      "secondary": "#1c2d50",
+      "accent": "#baccd8",
+      "white": "#ffffff",
+      "black": "#000000"
+    },
+    
+    "ui_colors": {
+      "border_gray": "#808080",
+      "border_dark_gray": "#A9A9A9",
+      "text_primary": "#1c2d50",
+      "text_secondary": "#2C3E50",
+      "background": "#ffffff"
+    },
+    
+    "status_colors": {
+      "success": "#7FB069",
+      "warning": "#F4D03F", 
+      "error": "#C85450",
+      "info": "#baccd8",
+      "pending": "#D2A3A9"
+    },
+    
+    "accent_colors": {
+      "deep_navy": "#2C3E50",
+      "dusty_rose": "#D2A3A9",
+      "warm_beige": "#E8D5B7",
+      "soft_fern": "#A3C9A8",
+      "lavender_mist": "#C8B5D1",
+      "cream_silk": "#F5E6A8",
+      "soft_pink": "#E6C2B8"
+    },
+    
+    "gradients": {
+      "primary_gradient": "linear-gradient(135deg, #fc5f36 0%, #fda790 100%)",
+      "header_gradient": "linear-gradient(135deg, #2C3E50 0%, #1c2d50 100%)",
+      "background_gradient": "linear-gradient(135deg, #E8D5B7 0%, #baccd8 100%)",
+      "card_header": "linear-gradient(135deg, #fda790 0%, #F5E6A8 100%)"
+    },
+    
+    "typography": {
+      "font_family": "Inter, 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+      "heading_color": "#2C3E50",
+      "body_color": "#1c2d50",
+      "accent_color": "#fc5f36"
+    },
+    
+    "component_styles": {
+      "buttons": {
+        "primary": {
+          "background": "#fc5f36",
+          "hover_background": "#e54f2c",
+          "text_color": "#ffffff",
+          "border_radius": "8px",
+          "box_shadow": "0 4px 12px rgba(252, 95, 54, 0.3)"
+        },
+        "secondary": {
+          "background": "#1c2d50",
+          "hover_background": "#0f1a35",
+          "text_color": "#ffffff",
+          "border_radius": "8px"
+        },
+        "success": {
+          "background": "#7FB069",
+          "hover_background": "#6fa055",
+          "text_color": "#ffffff",
+          "border_radius": "8px"
+        },
+        "warning": {
+          "background": "#F4D03F",
+          "hover_background": "#f1c40f",
+          "text_color": "#1c2d50",
+          "border_radius": "8px"
+        },
+        "danger": {
+          "background": "#C85450",
+          "hover_background": "#b44440",
+          "text_color": "#ffffff",
+          "border_radius": "8px"
+        }
+      },
+      
+      "cards": {
+        "background": "#ffffff",
+        "border": "1px solid #808080",
+        "border_radius": "12px",
+        "box_shadow": "0 4px 16px rgba(28, 45, 80, 0.1)",
+        "header_background": "linear-gradient(135deg, #fda790 0%, #F5E6A8 100%)",
+        "header_border_bottom": "2px solid #fc5f36"
+      },
+      
+      "forms": {
+        "input_border": "#808080",
+        "input_focus_border": "#fc5f36",
+        "input_background": "#ffffff",
+        "label_color": "#1c2d50",
+        "border_radius": "8px"
+      },
+      
+      "alerts": {
+        "success": {
+          "background": "rgba(127, 176, 105, 0.1)",
+          "border": "#7FB069",
+          "text": "#1c2d50"
+        },
+        "warning": {
+          "background": "rgba(244, 208, 63, 0.1)",
+          "border": "#F4D03F",
+          "text": "#1c2d50"
+        },
+        "error": {
+          "background": "rgba(200, 84, 80, 0.1)",
+          "border": "#C85450",
+          "text": "#1c2d50"
+        },
+        "info": {
+          "background": "rgba(186, 204, 216, 0.1)",
+          "border": "#baccd8",
+          "text": "#1c2d50"
+        }
+      },
+      
+      "badges": {
+        "urgent": {
+          "background": "#C85450",
+          "text": "#ffffff"
+        },
+        "high": {
+          "background": "#fc5f36",
+          "text": "#ffffff"
+        },
+        "standard": {
+          "background": "#F4D03F",
+          "text": "#1c2d50"
+        },
+        "low": {
+          "background": "#A3C9A8",
+          "text": "#ffffff"
+        }
+      }
+    },
+    
+    "api_endpoints": {
+      "base_url": "http://localhost:8001",
+      "endpoints": {
+        "health": "/api/health",
+        "next_task": "/api/tasks/next",
+        "submit_task": "/api/tasks/submit",
+        "fail_task": "/api/tasks/fail",
+        "available_tasks": "/api/tasks/available",
+        "scraper_tasks": "/api/scrapers/{scraper_id}/tasks",
+        "task_details": "/api/tasks/{task_id}",
+        "release_expired": "/api/maintenance/release-expired"
+      }
+    },
+    
+    "retool_components": {
+      "suggested_layout": [
+        {
+          "type": "Container",
+          "name": "Header",
+          "styling": {
+            "background": "linear-gradient(135deg, #2C3E50 0%, #1c2d50 100%)",
+            "padding": "16px",
+            "margin_bottom": "20px"
+          },
+          "children": [
+            {
+              "type": "Text", 
+              "content": "🚀 Human Staging Portal",
+              "style": "heading",
+              "color": "#ffffff"
+            },
+            {
+              "type": "Text",
+              "content": "ReputeAI & Valentine Advisors | Content Extraction System", 
+              "style": "subtitle",
+              "color": "#baccd8"
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "name": "Dashboard",
+          "children": [
+            {
+              "type": "Text",
+              "name": "SystemHealth",
+              "query": "{{health_check.data.status}}"
+            },
+            {
+              "type": "Text", 
+              "name": "TasksAvailable",
+              "query": "{{available_tasks.data.count}}"
+            },
+            {
+              "type": "Button",
+              "name": "GetTaskButton",
+              "text": "🎯 Get Next Task",
+              "query": "get_next_task",
+              "styling": {
+                "background": "#fc5f36",
+                "color": "#ffffff"
+              }
+            }
+          ]
+        },
+        {
+          "type": "Container",
+          "name": "TaskForm",
+          "children": [
+            {
+              "type": "TextInput",
+              "name": "headline",
+              "label": "📰 Headline"
+            },
+            {
+              "type": "TextInput", 
+              "name": "author",
+              "label": "👤 Author"
+            },
+            {
+              "type": "TextInput",
+              "name": "publication", 
+              "label": "📖 Publication"
+            },
+            {
+              "type": "DateInput",
+              "name": "date",
+              "label": "📅 Date"
+            },
+            {
+              "type": "TextInput",
+              "name": "story_link",
+              "label": "🔗 Story Link"
+            },
+            {
+              "type": "TextArea",
+              "name": "body",
+              "label": "📝 Article Body"
+            },
+            {
+              "type": "Button",
+              "name": "SubmitButton", 
+              "text": "✅ Submit Content",
+              "query": "submit_task",
+              "styling": {
+                "background": "#7FB069",
+                "color": "#ffffff"
+              }
+            },
+            {
+              "type": "Button",
+              "name": "FailButton",
+              "text": "❌ Mark Failed", 
+              "query": "fail_task",
+              "styling": {
+                "background": "#C85450",
+                "color": "#ffffff"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+} 

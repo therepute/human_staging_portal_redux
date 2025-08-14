@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Human Staging Portal - ReputeAI</title>
+    <link rel="stylesheet" href="/static/css/portal.css">
+    <style>
+        /* Enhanced styling for better readability */
+        .article-title {
+            font-size: 1.4rem !important;
+            font-weight: 600 !important;
+            line-height: 1.4 !important;
+            margin-bottom: 1rem !important;
+        }
+        
+        .article-text p {
+            font-size: 1.1rem !important;
+            margin-bottom: 0.8rem !important;
+            line-height: 1.5 !important;
+        }
+        
+        .form-group label {
+            font-size: 1.1rem !important;
+            font-weight: 600 !important;
+            margin-bottom: 0.5rem !important;
+        }
+        
+        .form-group input, .form-group textarea {
+            font-size: 1rem !important;
+            padding: 12px !important;
+            border-radius: 6px !important;
+        }
+        
+        .data-status {
+            background: #f8f9fa !important;
+            padding: 15px !important;
+            border-radius: 8px !important;
+            margin-top: 15px !important;
+            font-size: 1rem !important;
+            line-height: 1.6 !important;
+        }
+        
+        .modal {
+            display: flex;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal-content {
+            background: white;
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+            max-width: 500px;
+            width: 90%;
+        }
+        
+        .modal-actions {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+            margin-top: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="portal-container">
+        <!-- Header -->
+        <header class="portal-header">
+            <div class="header-left">
+                <h1>ReputeAI Human Staging Portal</h1>
+                <div class="user-info">
+                    <span>Welcome, Human Extractor</span>
+                    <span class="user-role">(Operator)</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="queue-status">
+                    <div class="queue-item expedited">
+                        <span class="queue-label">Available Tasks</span>
+                        <span class="queue-count" id="available-count">0</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="portal-main">
+            <!-- Article Display Panel -->
+            <div class="article-panel">
+                <div class="panel-header">
+                    <h2>Article Content</h2>
+                    <div class="article-meta" id="article-meta">
+                        <span class="source" id="article-source"></span>
+                        <span class="published-date" id="article-date"></span>
+                        <span class="priority" id="article-priority"></span>
+                    </div>
+                </div>
+                <div class="article-content" id="article-content">
+                    <div class="no-article">
+                        <p>No article assigned. Click "Get Next Article" to start.</p>
+                    </div>
+                </div>
+                <div class="article-actions">
+                    <button class="btn btn-primary" onclick="getFirstArticle()" id="first-article-btn">Get First Article</button>
+                    <div id="auto-next-status" style="display: none; padding: 10px; background: #e8f4fd; border-radius: 6px; margin-top: 10px;">
+                        <strong>🔄 Auto-Next Mode:</strong> Submit will automatically load the next article
+                    </div>
+                </div>
+            </div>
+
+            <!-- Extraction Panel -->
+            <div class="extraction-panel">
+                <div class="panel-header">
+                    <h2>Content Extraction</h2>
+                    <div class="extraction-timer">
+                        <span>Time: </span>
+                        <span id="extraction-timer">00:00</span>
+                    </div>
+                </div>
+                <div class="extraction-form">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h3 style="margin: 0; color: #2c3e50;">Content Extraction</h3>
+                        <button class="btn btn-warning" onclick="clearForm()" style="font-size: 0.9rem;">Clear Form</button>
+                    </div>
+                    
+                    <div id="loading-fields" style="text-align: center; padding: 20px;">
+                        <p>Loading required fields...</p>
+                    </div>
+                    
+                    <div id="dynamic-fields" style="display: none;">
+                        <!-- Publication field - Only if missing/empty -->
+                        <div class="form-group" id="publication-group" style="display: none;">
+                            <label for="publication-field">Publication Name:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="text" id="publication-field" placeholder="Publication/website name" style="flex: 1;">
+                                <button type="button" class="btn btn-secondary" onclick="markFieldNotAvailable('publication')" style="font-size: 0.8rem; padding: 8px 12px;">Not Available</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Author field - Only if missing -->
+                        <div class="form-group" id="author-group" style="display: none;">
+                            <label for="author-field">Author:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <input type="text" id="author-field" placeholder="Author name" style="flex: 1;">
+                                <button type="button" class="btn btn-secondary" onclick="markFieldNotAvailable('author')" style="font-size: 0.8rem; padding: 8px 12px;">Not Available</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Date field - Only if missing -->
+                        <div class="form-group" id="date-group" style="display: none;">
+                            <label for="date-fields">Publication Date:</label>
+                            <div style="display: flex; gap: 10px; align-items: center;">
+                                <div style="display: flex; gap: 10px; flex: 1;">
+                                    <select id="date-year" style="flex: 1; padding: 12px; font-size: 1rem;">
+                                        <option value="">Year</option>
+                                    </select>
+                                    <select id="date-month" style="flex: 1; padding: 12px; font-size: 1rem;">
+                                        <option value="">Month</option>
+                                        <option value="01">January</option>
+                                        <option value="02">February</option>
+                                        <option value="03">March</option>
+                                        <option value="04">April</option>
+                                        <option value="05">May</option>
+                                        <option value="06">June</option>
+                                        <option value="07">July</option>
+                                        <option value="08">August</option>
+                                        <option value="09">September</option>
+                                        <option value="10">October</option>
+                                        <option value="11">November</option>
+                                        <option value="12">December</option>
+                                    </select>
+                                    <select id="date-day" style="flex: 1; padding: 12px; font-size: 1rem;">
+                                        <option value="">Day</option>
+                                    </select>
+                                </div>
+                                <button type="button" class="btn btn-secondary" onclick="markFieldNotAvailable('date')" style="font-size: 0.8rem; padding: 8px 12px;">Not Available</button>
+                            </div>
+                        </div>
+                        
+                        <!-- Body field - ALWAYS required -->
+                        <div class="form-group">
+                            <label for="body-field">Article Body (Required):</label>
+                            <textarea id="body-field" placeholder="Paste the full article text here..." rows="15" required></textarea>
+                        </div>
+                        
+                        <!-- Headline field - Only if missing -->
+                        <div class="form-group" id="headline-group" style="display: none;">
+                            <label for="headline-field">Headline:</label>
+                            <input type="text" id="headline-field" placeholder="Article headline/title">
+                        </div>
+                        
+                        <!-- Notes field - Optional -->
+                        <div class="form-group">
+                            <label for="extraction-notes">Notes (optional):</label>
+                            <textarea id="extraction-notes" placeholder="Any notes about the extraction process..." rows="3"></textarea>
+                        </div>
+                    </div>
+                    
+                    <div class="extraction-actions">
+                        <button class="btn btn-success" onclick="submitExtraction()" id="submit-btn" disabled>Submit Extraction</button>
+                        <button class="btn btn-danger" onclick="showUnableToExtractModal()" id="unable-btn" disabled>Unable to Extract</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Status Bar -->
+        <footer class="portal-footer">
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-label">Status:</span>
+                    <span class="status-value" id="current-status">Ready</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Current Article:</span>
+                    <span class="status-value" id="current-article-id">None</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Session Time:</span>
+                    <span class="status-value" id="session-timer">00:00:00</span>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Unable to Extract Modal -->
+    <div id="unable-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <h3>Unable to Extract Article</h3>
+            <p>Please select the reason why you cannot extract this article:</p>
+            <select id="unable-reason" style="width: 100%; padding: 10px; font-size: 14px; margin: 10px 0;">
+                <option value="">-- Select Reason --</option>
+                <option value="paywall">Cannot Access - Paywalled</option>
+                <option value="no_article">Cannot Access - No article exists</option>
+                <option value="not_english">Not English Language</option>
+                <option value="video_content">Video content, unable to extract</option>
+                <option value="other">Other (explain below)</option>
+            </select>
+            <textarea id="unable-explanation" placeholder="Explain the issue (required for 'Other')" rows="3" style="width: 100%; padding: 10px; font-size: 14px; margin: 10px 0; display: none;"></textarea>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeUnableModal()">Cancel</button>
+                <button class="btn btn-danger" onclick="confirmUnable()">Mark as Unable</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/portal.js?v=1.3.1"></script>
+</body>
+</html> 
