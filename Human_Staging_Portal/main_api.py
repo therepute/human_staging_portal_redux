@@ -21,7 +21,8 @@ import yaml
 import uvicorn
 import logging
 
-from .utils.database_connector import DatabaseConnector
+# Use absolute import so it works when app root is the subdirectory
+from utils.database_connector import DatabaseConnector
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
