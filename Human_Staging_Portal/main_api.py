@@ -22,8 +22,13 @@ import yaml
 import uvicorn
 import logging
 
-# Use absolute import so it works both locally and in deployment
-from Human_Staging_Portal.utils.database_connector import DatabaseConnector
+# Import DatabaseConnector in a way that works in both deployment modes:
+# 1) Started from repo root (import path: Human_Staging_Portal.main_api)
+# 2) Started from package dir (module name: main_api, with sibling package utils/)
+try:
+    from Human_Staging_Portal.utils.database_connector import DatabaseConnector  # mode 1
+except ModuleNotFoundError:
+    from utils.database_connector import DatabaseConnector  # mode 2
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
