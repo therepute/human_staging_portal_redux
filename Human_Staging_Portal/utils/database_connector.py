@@ -167,18 +167,47 @@ class DatabaseConnector:
             
             logger.info(f"🗂️ Final soups_data (after cleanup): {soups_data}")
             logger.info(f"📊 Inserting into table: {self.destination_table}")
-            
-            # Insert/Update into the_soups keyed by soup_dedupe_id to prevent duplicates
-            insert_response = self.client.table(self.destination_table).upsert(soups_data, on_conflict="soup_dedupe_id").execute()
-            
-            logger.info(f"📤 Insert response: {insert_response}")
-            
-            if not insert_response.data:
-                logger.error(f"❌ Failed to insert into {self.destination_table} - no data returned")
-                logger.error(f"❌ Insert response details: {insert_response}")
+
+            # Upsert fallback: perform SELECT → UPDATE or INSERT because the table
+            # may not have a unique constraint on soup_dedupe_id (required by PostgREST upsert)
+            existing = (
+                self.client
+                .table(self.destination_table)
+                .select("soup_dedupe_id")
+                .eq("soup_dedupe_id", task_id)
+                .limit(1)
+                .execute()
+            )
+
+            if existing.data:
+                # Row exists → UPDATE it and stamp last_modified_at
+                update_payload = {**soups_data}
+                update_payload.pop("submitted_at", None)
+                update_payload["last_modified_at"] = current_time
+                write_response = (
+                    self.client
+                    .table(self.destination_table)
+                    .update(update_payload)
+                    .eq("soup_dedupe_id", task_id)
+                    .execute()
+                )
+                logger.info(f"📤 Update response: {write_response}")
+            else:
+                # Row does not exist → INSERT new
+                write_response = (
+                    self.client
+                    .table(self.destination_table)
+                    .insert(soups_data)
+                    .execute()
+                )
+                logger.info(f"📤 Insert response: {write_response}")
+
+            if not write_response.data:
+                logger.error(f"❌ Failed to write into {self.destination_table} - no data returned")
+                logger.error(f"❌ Write response details: {write_response}")
                 return False
-            
-            logger.info(f"✅ Successfully inserted into {self.destination_table}: {insert_response.data}")
+
+            logger.info(f"✅ Successfully wrote into {self.destination_table}: {write_response.data}")
             
             # Update soup_dedupe status to completed
             update_data = {
