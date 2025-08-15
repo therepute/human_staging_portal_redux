@@ -40,7 +40,7 @@ class DatabaseConnector:
             response = self.client.table(self.staging_table).select(
                 "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
                 "summary, content, subscription_source, source, client_priority, focus_industry, "
-                "headline_relevance, pub_tier, publication, clients, retry_count, "
+                "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
                 "WF_Pre_Check_Complete, WF_Extraction_Complete, next_retry_at, last_modified, created_at"
             ).eq("extraction_path", 2).order("client_priority", desc=True).order("created_at", desc=True).limit(200).execute()
 
@@ -53,7 +53,8 @@ class DatabaseConnector:
                 wf_done = row.get("WF_Extraction_Complete")
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
-                if pre_ok and not_done:
+                dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
+                if pre_ok and not_done and dedupe_ok:
                     filtered.append(row)
 
             if filtered:
@@ -93,7 +94,7 @@ class DatabaseConnector:
         """
         try:
             # Verify the task exists and is available (not completed)
-            response = self.client.table(self.staging_table).select("id, WF_Extraction_Complete, extraction_path").eq("id", task_id).limit(1).execute()
+            response = self.client.table(self.staging_table).select("id, WF_Extraction_Complete, extraction_path, dedupe_status").eq("id", task_id).limit(1).execute()
 
             if not response.data:
                 logger.warning(f"Task {task_id} not found for assignment")
@@ -105,6 +106,9 @@ class DatabaseConnector:
                 return False
             if row.get("WF_Extraction_Complete") is True:
                 logger.warning(f"Task {task_id} already completed")
+                return False
+            if str(row.get("dedupe_status") or "").strip().lower() != "original":
+                logger.warning(f"Task {task_id} skipped due to dedupe_status != original")
                 return False
             logger.info(f"Task {task_id} assigned to scraper {scraper_id} (simplified mode)")
             return True
@@ -357,6 +361,116 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"Error releasing expired tasks: {e}")
             return 0
+
+    # ===================== Admin Metrics =====================
+    async def metrics_human_per_day(self, days: int = 14) -> List[Dict[str, Any]]:
+        """Counts of human-portal submissions per day for the last N days."""
+        try:
+            # Pull recent rows and group by date in Python
+            resp = (
+                self.client
+                .table(self.destination_table)
+                .select("submitted_at, created_at, last_modified_at")
+                .eq("scraper_id", "human_portal_user")
+                .order("last_modified_at", desc=True)
+                .limit(1000)
+                .execute()
+            )
+            rows = resp.data or []
+            from datetime import datetime, timezone, timedelta
+            now = datetime.now(timezone.utc)
+            cutoff = now - timedelta(days=days)
+            buckets: Dict[str, int] = {}
+            for r in rows:
+                ts = r.get("last_modified_at") or r.get("submitted_at") or r.get("created_at")
+                if not ts:
+                    continue
+                try:
+                    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                except Exception:
+                    continue
+                if dt < cutoff:
+                    continue
+                dstr = dt.date().isoformat()
+                buckets[dstr] = buckets.get(dstr, 0) + 1
+            # Return sorted by date asc
+            return [{"date": k, "count": buckets[k]} for k in sorted(buckets.keys())]
+        except Exception as e:
+            logger.error(f"metrics_human_per_day error: {e}")
+            return []
+
+    async def metrics_soups_groupings(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Counts in the_soups grouped by clients and focus_industry."""
+        try:
+            resp = (
+                self.client
+                .table(self.destination_table)
+                .select("clients, focus_industry")
+                .limit(5000)
+                .execute()
+            )
+            rows = resp.data or []
+            by_clients: Dict[str, int] = {}
+            by_focus: Dict[str, int] = {}
+            for r in rows:
+                c = (r.get("clients") or "Unspecified").strip()
+                if not c:
+                    c = "Unspecified"
+                by_clients[c] = by_clients.get(c, 0) + 1
+                fi = r.get("focus_industry")
+                if isinstance(fi, list):
+                    for v in fi:
+                        val = (str(v) or "Unspecified").strip() or "Unspecified"
+                        by_focus[val] = by_focus.get(val, 0) + 1
+                elif fi is not None:
+                    val = (str(fi) or "Unspecified").strip() or "Unspecified"
+                    by_focus[val] = by_focus.get(val, 0) + 1
+            return {
+                "by_clients": sorted([{"key": k, "count": v} for k, v in by_clients.items()], key=lambda x: x["count"], reverse=True),
+                "by_focus_industry": sorted([{"key": k, "count": v} for k, v in by_focus.items()], key=lambda x: x["count"], reverse=True)
+            }
+        except Exception as e:
+            logger.error(f"metrics_soups_groupings error: {e}")
+            return {"by_clients": [], "by_focus_industry": []}
+
+    async def metrics_pending_groupings(self) -> Dict[str, List[Dict[str, Any]]]:
+        """Counts of pending (awaiting scrape) grouped by clients and focus_industry from soup_dedupe."""
+        try:
+            # Fetch superset and filter like get_available_tasks
+            resp = self.client.table(self.staging_table).select(
+                "id, clients, focus_industry, WF_Pre_Check_Complete, WF_Extraction_Complete, extraction_path, created_at, WF_TIMESTAMP_Pre_Check_Complete"
+            ).eq("extraction_path", 2).limit(4000).execute()
+            rows = resp.data or []
+            filtered: List[Dict[str, Any]] = []
+            for row in rows:
+                wf_pre = row.get("WF_Pre_Check_Complete")
+                wf_done = row.get("WF_Extraction_Complete")
+                pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
+                not_done = (wf_done is None) or (wf_done is False)
+                if pre_ok and not_done:
+                    filtered.append(row)
+            by_clients: Dict[str, int] = {}
+            by_focus: Dict[str, int] = {}
+            for r in filtered:
+                c = (r.get("clients") or "Unspecified").strip()
+                if not c:
+                    c = "Unspecified"
+                by_clients[c] = by_clients.get(c, 0) + 1
+                fi = r.get("focus_industry")
+                if isinstance(fi, list):
+                    for v in fi:
+                        val = (str(v) or "Unspecified").strip() or "Unspecified"
+                        by_focus[val] = by_focus.get(val, 0) + 1
+                elif fi is not None:
+                    val = (str(fi) or "Unspecified").strip() or "Unspecified"
+                    by_focus[val] = by_focus.get(val, 0) + 1
+            return {
+                "by_clients": sorted([{"key": k, "count": v} for k, v in by_clients.items()], key=lambda x: x["count"], reverse=True),
+                "by_focus_industry": sorted([{"key": k, "count": v} for k, v in by_focus.items()], key=lambda x: x["count"], reverse=True)
+            }
+        except Exception as e:
+            logger.error(f"metrics_pending_groupings error: {e}")
+            return {"by_clients": [], "by_focus_industry": []}
 
     async def analyze_required_fields(self, task_id: str) -> Dict[str, Any]:
         """

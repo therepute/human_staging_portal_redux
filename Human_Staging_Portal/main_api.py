@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse
 import yaml
@@ -535,6 +536,38 @@ async def get_task_details_query(task_id: str, db: DatabaseConnector = Depends(g
     except Exception as e:
         logger.error(f"Error getting task {task_id} via query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# ===================== Admin endpoints (read-only) =====================
+@app.get("/api/admin/human_per_day", response_model=Dict[str, Any])
+async def admin_human_per_day(days: int = 14, db: DatabaseConnector = Depends(get_db)):
+    try:
+        rows = await db.metrics_human_per_day(days)
+        return {"success": True, "days": days, "items": rows}
+    except Exception as e:
+        logger.error(f"Admin human_per_day error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/soups_groupings", response_model=Dict[str, Any])
+async def admin_soups_groupings(db: DatabaseConnector = Depends(get_db)):
+    try:
+        data = await db.metrics_soups_groupings()
+        return {"success": True, **data}
+    except Exception as e:
+        logger.error(f"Admin soups_groupings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/admin/pending_groupings", response_model=Dict[str, Any])
+async def admin_pending_groupings(db: DatabaseConnector = Depends(get_db)):
+    try:
+        data = await db.metrics_pending_groupings()
+        return {"success": True, **data}
+    except Exception as e:
+        logger.error(f"Admin pending_groupings error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_page(request: Request):
+    return templates.TemplateResponse("admin.html", {"request": request})
 
 @app.post("/api/maintenance/release-expired", response_model=Dict[str, Any])
 async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):
