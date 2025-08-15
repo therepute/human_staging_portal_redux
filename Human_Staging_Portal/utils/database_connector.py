@@ -205,8 +205,10 @@ class DatabaseConnector:
             logger.error(f"💥 Error submitting extraction for task {task_id}: {e}")
             logger.error(f"💥 Exception details: {type(e).__name__}: {str(e)}")
             import traceback
-            logger.error(f"💥 Full traceback: {traceback.format_exc()}")
-            return False
+            tb = traceback.format_exc()
+            logger.error(f"💥 Full traceback: {tb}")
+            # Propagate a descriptive error so the API can return a helpful message
+            raise RuntimeError(f"submit_extraction failed: {type(e).__name__}: {str(e)}")
 
     async def get_recent_human(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Fetch most recent human-portal submissions from the_soups."""

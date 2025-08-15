@@ -426,8 +426,9 @@ async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector
         logger.error(f"💥 Exception in submit endpoint for task {submission.task_id}: {e}")
         logger.error(f"💥 Exception type: {type(e).__name__}")
         import traceback
-        logger.error(f"💥 Full traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        tb = traceback.format_exc()
+        logger.error(f"💥 Full traceback: {tb}")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 @app.post("/api/tasks/fail", response_model=Dict[str, Any])
 async def fail_task(failure: FailureRequest, db: DatabaseConnector = Depends(get_db)):
