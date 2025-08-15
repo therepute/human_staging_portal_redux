@@ -1,0 +1,27 @@
+INFO:     Will watch for changes in these directories: ['/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux']
+INFO:     Uvicorn running on http://0.0.0.0:8003 (Press CTRL+C to quit)
+INFO:     Started reloader process [14290] using WatchFiles
+INFO:     Started server process [14295]
+INFO:     Waiting for application startup.
+2025-08-15 09:15:34,910 - ERROR - ❌ Failed to initialize database connector: Invalid API key
+2025-08-15 09:15:34,910 - INFO - 🔄 Human Staging Portal API shutting down
+ERROR:    Traceback (most recent call last):
+  File "/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux/.venv/lib/python3.13/site-packages/starlette/routing.py", line 677, in lifespan
+    async with self.lifespan_context(app) as maybe_state:
+               ~~~~~~~~~~~~~~~~~~~~~^^^^^
+  File "/opt/homebrew/Cellar/python@3.13/3.13.1/Frameworks/Python.framework/Versions/3.13/lib/python3.13/contextlib.py", line 214, in __aenter__
+    return await anext(self.gen)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux/Human_Staging_Portal/main_api.py", line 177, in lifespan
+    db_connector = DatabaseConnector()
+  File "/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux/Human_Staging_Portal/utils/database_connector.py", line 27, in __init__
+    self.client: Client = create_client(self.supabase_url, self.supabase_key)
+                          ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux/.venv/lib/python3.13/site-packages/supabase/client.py", line 284, in create_client
+    return Client(supabase_url=supabase_url, supabase_key=supabase_key, options=options)
+  File "/Users/willvalentine/reputeai_orchestrator/human_staging_portal_redux/.venv/lib/python3.13/site-packages/supabase/client.py", line 59, in __init__
+    raise SupabaseException("Invalid API key")
+supabase.client.SupabaseException: Invalid API key
+
+ERROR:    Application startup failed. Exiting.
+INFO:     Stopping reloader process [14290]

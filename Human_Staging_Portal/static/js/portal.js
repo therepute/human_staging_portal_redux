@@ -6,9 +6,14 @@ console.log('🚀 Portal.js v1.3.1 loading...');
 let currentArticle = null;
 let articleWindow = null; // Dedicated article window reference
 let autoNextMode = false; // Track if we're in auto-next workflow
+let editedFields = new Set(); // Track which prefilled fields were edited
 
 // API base URL for FastAPI
 const API_BASE = '/api';
+
+// Tiny styles reused for edit/copy link-buttons
+const EDIT_LINK_STYLE = 'font-size:0.85rem;margin-left:8px;';
+const LINK_BTN_STYLE = 'background:none;border:none;color:#0d6efd;padding:0;margin-left:8px;font-size:0.85rem;cursor:pointer;';
 
 // Initialize portal
 document.addEventListener('DOMContentLoaded', function() {
@@ -16,6 +21,7 @@ document.addEventListener('DOMContentLoaded', function() {
     updateStatus('Ready');
     populateYearDropdown();
     populateDayDropdown();
+    setupRecentSidebar();
 });
 
 // Populate year dropdown with current year and previous years
@@ -107,6 +113,7 @@ async function getNextArticle() {
 async function displayArticle(article) {
     console.log('📄 Displaying article:', article.title);
     currentArticle = article;
+    editedFields = new Set();
     
     // Determine if we have server-provided credentials and/or if this likely needs a subscription
     const hasServerCreds = !!(article.credentials && (article.credentials.email || article.credentials.password));
@@ -124,11 +131,11 @@ async function displayArticle(article) {
                 <small><strong>Domain:</strong> ${cred.domain || 'Unknown'}</small><br>
                 <div style="margin-top:6px;">
                     <small><strong>Email:</strong> <code>${cred.email || '—'}</code></small>
-                    <button class="btn btn-secondary copy-btn" data-value="${(cred.email || '').replace(/"/g, '&quot;')}">Copy Email</button>
+                    <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${(cred.email || '').replace(/\"/g, '&quot;')}">⧉ Copy Email</button>
                 </div>
                 <div style="margin-top:6px;">
                     <small><strong>Password:</strong> <code>${cred.password || '—'}</code></small>
-                    <button class="btn btn-secondary copy-btn" data-value="${(cred.password || '').replace(/"/g, '&quot;')}">Copy Password</button>
+                    <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${(cred.password || '').replace(/\"/g, '&quot;')}">⧉ Copy Password</button>
                 </div>
                 ${cred.notes ? `<div style="margin-top:6px;"><small><strong>Notes:</strong> ${cred.notes}</small></div>` : ''}
             </div>
@@ -185,13 +192,13 @@ async function displayArticle(article) {
                         2) After login, open this article URL:
                         <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
                             <small style="color:#666; font-style: italic;">${article.permalink_url}</small>
-                            <button class="btn btn-secondary copy-btn" data-value="${article.permalink_url.replace(/"/g, '&quot;')}">Copy Link</button>
+                            <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${article.permalink_url.replace(/\"/g, '&quot;')}">⧉ Copy Link</button>
                         </div>
                     </div>
                     ${(email || password) ? `
                     <div>
-                        <div><small><strong>Email:</strong> <code>${email || '—'}</code> <button class="btn btn-secondary copy-btn" data-value="${(email || '').replace(/"/g, '&quot;')}">Copy</button></small></div>
-                        <div><small><strong>Password:</strong> <code>${password || '—'}</code> <button class="btn btn-secondary copy-btn" data-value="${(password || '').replace(/"/g, '&quot;')}">Copy</button></small></div>
+                        <div><small><strong>Email:</strong> <code>${email || '—'}</code> <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${(email || '').replace(/\"/g, '&quot;')}">⧉ Copy</button></small></div>
+                        <div><small><strong>Password:</strong> <code>${password || '—'}</code> <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${(password || '').replace(/\"/g, '&quot;')}">⧉ Copy</button></small></div>
                     </div>
                     ` : ''}
                 </div>
@@ -206,18 +213,18 @@ async function displayArticle(article) {
                 </button>
                 <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
                     <small style="color: #666; font-style: italic;">${article.permalink_url}</small>
-                    <button class="btn btn-secondary copy-btn" data-value="${article.permalink_url.replace(/"/g, '&quot;')}">Copy Link</button>
+                    <button class="copy-btn" style="${LINK_BTN_STYLE}" data-value="${article.permalink_url.replace(/\"/g, '&quot;')}">⧉ Copy Link</button>
                 </div>
             </div>
         `;
     }
 
     articleContent.innerHTML = `
-        <div class="article-title">${article.title}</div>
+        <div class="article-title"><span id="headline-display">${article.title}</span> <a href="#" class="edit-link" data-field="headline" style="${EDIT_LINK_STYLE}">✎ Edit</a></div>
         <div class="article-text">
-            <p><strong>Publication:</strong> ${article.publication || 'Empty - need from scraper'}</p>
-            <p><strong>Published Date:</strong> ${article.published_at ? formatDate(article.published_at) : '❌ Missing - need from scraper'}</p>
-            <p><strong>Author:</strong> ${article.actor_name || '❌ Missing - need from scraper'}</p>
+            <p><strong>Publication:</strong> <span id="publication-display">${article.publication || 'Empty - need from scraper'}</span> <a href="#" class="edit-link" data-field="publication" style="${EDIT_LINK_STYLE}">✎ Edit</a></p>
+            <p><strong>Published Date:</strong> <span id="date-display">${article.published_at ? formatDate(article.published_at) : '❌ Missing - need from scraper'}</span> <a href="#" class="edit-link" data-field="date" style="${EDIT_LINK_STYLE}">✎ Edit</a></p>
+            <p><strong>Author:</strong> <span id="author-display">${article.actor_name || '❌ Missing - need from scraper'}</span> <a href="#" class="edit-link" data-field="author" style="${EDIT_LINK_STYLE}">✎ Edit</a></p>
             ${priorityLine}
             ${credentialInfo}
             <hr>
@@ -236,6 +243,172 @@ async function displayArticle(article) {
     
     // Load smart field detection based on actual missing data
     await loadRequiredFields(article);
+}
+
+// Add edit/UPDATE support (delegated click handler)
+document.addEventListener('click', function(e) {
+    const target = e.target;
+    if (target && target.classList && target.classList.contains('edit-link')) {
+        e.preventDefault();
+        const field = target.getAttribute('data-field');
+        revealEditField(field);
+    }
+});
+
+function revealEditField(field) {
+    if (!currentArticle) return;
+    switch(field) {
+        case 'publication': {
+            const group = document.getElementById('publication-group');
+            if (group) {
+                group.style.display = 'block';
+                // Add a small Update button if not present
+                let actions = document.getElementById('publication-actions');
+                if (!actions) {
+                    actions = document.createElement('div');
+                    actions.id = 'publication-actions';
+                    actions.style.marginTop = '6px';
+                    actions.innerHTML = `<button type="button" class="btn btn-secondary" id="publication-update" style="font-size:0.8rem;">Update</button>`;
+                    group.appendChild(actions);
+                    document.getElementById('publication-update').onclick = () => applyEdit('publication');
+                }
+                const input = document.getElementById('publication-field');
+                if (input) {
+                    input.disabled = false;
+                    input.value = currentArticle.publication || '';
+                    input.focus();
+                }
+            }
+            break;
+        }
+        case 'author': {
+            const group = document.getElementById('author-group');
+            if (group) {
+                group.style.display = 'block';
+                let actions = document.getElementById('author-actions');
+                if (!actions) {
+                    actions = document.createElement('div');
+                    actions.id = 'author-actions';
+                    actions.style.marginTop = '6px';
+                    actions.innerHTML = `<button type="button" class="btn btn-secondary" id="author-update" style="font-size:0.8rem;">Update</button>`;
+                    group.appendChild(actions);
+                    document.getElementById('author-update').onclick = () => applyEdit('author');
+                }
+                const input = document.getElementById('author-field');
+                if (input) {
+                    input.disabled = false;
+                    input.value = currentArticle.actor_name || '';
+                    input.focus();
+                }
+            }
+            break;
+        }
+        case 'headline': {
+            const group = document.getElementById('headline-group');
+            if (group) {
+                group.style.display = 'block';
+                let actions = document.getElementById('headline-actions');
+                if (!actions) {
+                    actions = document.createElement('div');
+                    actions.id = 'headline-actions';
+                    actions.style.marginTop = '6px';
+                    actions.innerHTML = `<button type="button" class="btn btn-secondary" id="headline-update" style="font-size:0.8rem;">Update</button>`;
+                    group.appendChild(actions);
+                    document.getElementById('headline-update').onclick = () => applyEdit('headline');
+                }
+                const input = document.getElementById('headline-field');
+                if (input) {
+                    input.value = currentArticle.title || '';
+                    input.focus();
+                }
+            }
+            break;
+        }
+        case 'date': {
+            const group = document.getElementById('date-group');
+            if (group) {
+                group.style.display = 'block';
+                ['date-year','date-month','date-day'].forEach(id => { const el = document.getElementById(id); if (el) el.disabled = false; });
+                if (currentArticle.published_at) {
+                    try {
+                        const d = new Date(currentArticle.published_at);
+                        const y = d.getUTCFullYear().toString();
+                        const m = String(d.getUTCMonth() + 1).padStart(2,'0');
+                        const dd = String(d.getUTCDate()).padStart(2,'0');
+                        const ys = document.getElementById('date-year');
+                        const ms = document.getElementById('date-month');
+                        const ds = document.getElementById('date-day');
+                        if (ys) ys.value = y;
+                        if (ms) ms.value = m;
+                        if (ds) ds.value = dd;
+                    } catch {}
+                }
+                let actions = document.getElementById('date-actions');
+                if (!actions) {
+                    actions = document.createElement('div');
+                    actions.id = 'date-actions';
+                    actions.style.marginTop = '6px';
+                    actions.innerHTML = `<button type="button" class="btn btn-secondary" id="date-update" style="font-size:0.8rem;">Update</button>`;
+                    group.appendChild(actions);
+                    document.getElementById('date-update').onclick = () => applyEdit('date');
+                }
+            }
+            break;
+        }
+    }
+}
+
+function applyEdit(field) {
+    if (!currentArticle) return;
+    switch(field) {
+        case 'publication': {
+            const input = document.getElementById('publication-field');
+            if (input && input.value.trim()) {
+                currentArticle.publication = input.value.trim();
+                const span = document.getElementById('publication-display');
+                if (span) span.textContent = currentArticle.publication;
+                editedFields.add('publication');
+                document.getElementById('publication-group').style.display = 'none';
+            }
+            break;
+        }
+        case 'author': {
+            const input = document.getElementById('author-field');
+            if (input && input.value.trim()) {
+                currentArticle.actor_name = input.value.trim();
+                const span = document.getElementById('author-display');
+                if (span) span.textContent = currentArticle.actor_name;
+                editedFields.add('author');
+                document.getElementById('author-group').style.display = 'none';
+            }
+            break;
+        }
+        case 'headline': {
+            const input = document.getElementById('headline-field');
+            if (input && input.value.trim()) {
+                currentArticle.title = input.value.trim();
+                const span = document.getElementById('headline-display');
+                if (span) span.textContent = currentArticle.title;
+                editedFields.add('headline');
+                document.getElementById('headline-group').style.display = 'none';
+            }
+            break;
+        }
+        case 'date': {
+            const ys = document.getElementById('date-year');
+            const ms = document.getElementById('date-month');
+            const ds = document.getElementById('date-day');
+            if (ys && ms && ds && ys.value && ms.value && ds.value) {
+                const iso = `${ys.value}-${ms.value}-${ds.value}T00:00:00Z`;
+                currentArticle.published_at = iso;
+                const span = document.getElementById('date-display');
+                if (span) span.textContent = `${ms.value}/${ds.value}/${ys.value}`;
+                editedFields.add('date');
+                document.getElementById('date-group').style.display = 'none';
+            }
+            break;
+        }
+    }
 }
 
 // Determine what fields are actually missing
@@ -877,3 +1050,68 @@ document.addEventListener('click', function(e) {
 });
 
 console.log('✅ Portal.js loaded successfully!');
+
+// ===================== Recent Sidebar =====================
+function setupRecentSidebar() {
+    const link = document.getElementById('recent-link');
+    const sidebar = document.getElementById('recent-sidebar');
+    const list = document.getElementById('recent-list');
+    const loading = document.getElementById('recent-loading');
+    const closeBtn = document.getElementById('recent-close');
+    if (!link || !sidebar) return;
+
+    link.addEventListener('click', async (e) => {
+        e.preventDefault();
+        sidebar.style.display = 'block';
+        list.innerHTML = '';
+        loading.style.display = 'block';
+        try {
+            const res = await fetch(`${API_BASE}/recent`);
+            const data = await res.json();
+            loading.style.display = 'none';
+            if (!data.success || !Array.isArray(data.items) || data.items.length === 0) {
+                list.innerHTML = '<li style="color:#666; padding:8px;">No recent items yet.</li>';
+                return;
+            }
+            for (const item of data.items) {
+                const li = document.createElement('li');
+                li.style.padding = '8px 6px';
+                li.style.borderBottom = '1px solid #eee';
+                li.innerHTML = `
+                    <div style="font-weight:600;">${(item.headline || '').slice(0,120)}</div>
+                    <div style="color:#555; font-size:0.9rem;">${item.publication || ''} • ${item.date || ''}</div>
+                    <div style="margin-top:4px;"><button class="btn btn-secondary" data-review-id="${item.id}" style="font-size:0.8rem;">Open in Review</button></div>
+                `;
+                list.appendChild(li);
+            }
+        } catch (err) {
+            loading.style.display = 'none';
+            list.innerHTML = '<li style="color:#c00; padding:8px;">Failed to load recent.</li>';
+        }
+    });
+
+    closeBtn && closeBtn.addEventListener('click', () => {
+        sidebar.style.display = 'none';
+    });
+
+    document.addEventListener('click', async (e) => {
+        const btnAttr = e.target && e.target.getAttribute && e.target.getAttribute('data-review-id');
+        if (!btnAttr) return;
+        const taskId = e.target.getAttribute('data-review-id');
+        try {
+            // Use query-param endpoint to allow IDs containing slashes
+            const res = await fetch(`${API_BASE}/task?task_id=${encodeURIComponent(taskId)}`);
+            const data = await res.json();
+            if (data && data.success && data.task) {
+                // Load into standard view for now (simple review mode)
+                displayArticle(data.task);
+                document.getElementById('recent-sidebar').style.display = 'none';
+                updateStatus('Review Mode: loaded previous article');
+            } else {
+                alert('Could not load that article.');
+            }
+        } catch (_) {
+            alert('Could not load that article.');
+        }
+    });
+}

@@ -21,8 +21,8 @@ import yaml
 import uvicorn
 import logging
 
-# Use absolute import so it works when app root is the subdirectory
-from utils.database_connector import DatabaseConnector
+# Use absolute import so it works both locally and in deployment
+from Human_Staging_Portal.utils.database_connector import DatabaseConnector
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -356,6 +356,17 @@ async def get_available_tasks(limit: int = 10, db: DatabaseConnector = Depends(g
         logger.error(f"Error getting available tasks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/recent", response_model=Dict[str, Any])
+async def get_recent(limit: int = 50, db: DatabaseConnector = Depends(get_db)):
+    """Return the most recent human-portal submissions (up to limit)."""
+    try:
+        limit = max(1, min(limit, 100))
+        rows = await db.get_recent_human(limit)
+        return {"success": True, "count": len(rows), "items": rows}
+    except Exception as e:
+        logger.error(f"Error getting recent list: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/tasks/submit", response_model=Dict[str, Any])
 async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector = Depends(get_db)):
     """Submit extracted content for a task"""
@@ -485,6 +496,9 @@ async def get_task_details(task_id: str, db: DatabaseConnector = Depends(get_db)
     """Get details for a specific task"""
     try:
         task = await db.get_task_by_id(task_id)
+        if not task:
+            # Try the_soups via soup_dedupe_id for review-mode items
+            task = await db.get_soups_by_soup_dedupe_id(task_id)
         
         if task:
             return {
@@ -499,6 +513,27 @@ async def get_task_details(task_id: str, db: DatabaseConnector = Depends(get_db)
         raise
     except Exception as e:
         logger.error(f"Error getting task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/task", response_model=Dict[str, Any])
+async def get_task_details_query(task_id: str, db: DatabaseConnector = Depends(get_db)):
+    """Same as get_task_details, but takes task_id as a query parameter to support IDs containing slashes."""
+    try:
+        task = await db.get_task_by_id(task_id)
+        if not task:
+            task = await db.get_soups_by_soup_dedupe_id(task_id)
+        if task:
+            return {
+                "success": True,
+                "task": task,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting task {task_id} via query: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/maintenance/release-expired", response_model=Dict[str, Any])

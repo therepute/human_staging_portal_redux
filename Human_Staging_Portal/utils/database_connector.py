@@ -148,7 +148,12 @@ class DatabaseConnector:
                 "client_priority": original_article.get("client_priority"),  # Direct carryover ✅
                 "subscription": original_article.get("subscription"),  # Direct carryover ✅
                 # "pub_tier": original_article.get("pub_tier"),  # REMOVED: Column doesn't exist in the_soups table
-                "soup_dedupe_id": task_id  # Links back to soup_dedupe.id ✅
+                "soup_dedupe_id": task_id,  # Links back to soup_dedupe.id ✅
+                # Portal submit metadata for Recent-50 filtering
+                "scraper_id": scraper_id,
+                "submitted_at": current_time,
+                # Optional timing info if provided by the UI
+                "duration_sec": extracted_data.get("duration_sec")
             }
             
             logger.info(f"🗂️ Mapped soups_data (before cleanup): {soups_data}")
@@ -159,8 +164,8 @@ class DatabaseConnector:
             logger.info(f"🗂️ Final soups_data (after cleanup): {soups_data}")
             logger.info(f"📊 Inserting into table: {self.destination_table}")
             
-            # Insert into the_soups
-            insert_response = self.client.table(self.destination_table).insert(soups_data).execute()
+            # Insert/Update into the_soups keyed by soup_dedupe_id to prevent duplicates
+            insert_response = self.client.table(self.destination_table).upsert(soups_data, on_conflict="soup_dedupe_id").execute()
             
             logger.info(f"📤 Insert response: {insert_response}")
             
@@ -198,6 +203,51 @@ class DatabaseConnector:
             import traceback
             logger.error(f"💥 Full traceback: {traceback.format_exc()}")
             return False
+
+    async def get_recent_human(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Fetch most recent human-portal submissions from the_soups."""
+        try:
+            # Grab a wider slice and sort in Python using our recency rule
+            response = (
+                self.client
+                .table(self.destination_table)
+                .select(
+                    "soup_dedupe_id, Headline, Publication, Date, Story_Link, scraper_id, "
+                    "submitted_at, created_at, last_modified_at"
+                )
+                .eq("scraper_id", "human_portal_user")
+                .order("last_modified_at", desc=True)
+                .limit(200)
+                .execute()
+            )
+
+            rows: List[Dict[str, Any]] = response.data or []
+
+            def recency_key(r: Dict[str, Any]):
+                # Prefer last_modified_at, then submitted_at, then created_at
+                return (
+                    r.get("last_modified_at") or r.get("submitted_at") or r.get("created_at") or ""
+                )
+
+            rows_sorted = sorted(rows, key=recency_key, reverse=True)
+
+            recent: List[Dict[str, Any]] = []
+            for r in rows_sorted[:limit]:
+                recent.append({
+                    "id": r.get("soup_dedupe_id"),
+                    "headline": r.get("Headline"),
+                    "publication": r.get("Publication"),
+                    "date": r.get("Date"),
+                    "story_link": r.get("Story_Link"),
+                    "submitted_at": r.get("submitted_at"),
+                    "created_at": r.get("created_at"),
+                    "last_modified_at": r.get("last_modified_at")
+                })
+
+            return recent
+        except Exception as e:
+            logger.error(f"Error fetching recent human submissions: {e}")
+            return []
 
     async def handle_failure(self, task_id: str, scraper_id: str, error_message: str) -> bool:
         """
@@ -252,6 +302,36 @@ class DatabaseConnector:
                 
         except Exception as e:
             logger.error(f"Error fetching task {task_id}: {e}")
+            return None
+
+    async def get_soups_by_soup_dedupe_id(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """Load a the_soups row by soup_dedupe_id and map to article-like shape."""
+        try:
+            response = (
+                self.client
+                .table(self.destination_table)
+                .select("*")
+                .eq("soup_dedupe_id", task_id)
+                .limit(1)
+                .execute()
+            )
+            if not response.data:
+                return None
+            row = response.data[0]
+            # Map to staging-like keys expected by the UI
+            mapped = {
+                "id": row.get("soup_dedupe_id"),
+                "title": row.get("Headline"),
+                "publication": row.get("Publication"),
+                "actor_name": row.get("Author"),
+                "published_at": row.get("Date"),
+                "permalink_url": row.get("Story_Link"),
+                "clients": row.get("clients"),
+                "focus_industry": row.get("focus_industry"),
+            }
+            return mapped
+        except Exception as e:
+            logger.error(f"Error fetching the_soups by soup_dedupe_id {task_id}: {e}")
             return None
 
     async def get_scraper_tasks(self, scraper_id: str) -> List[Dict[str, Any]]:

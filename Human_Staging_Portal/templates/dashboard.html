@@ -90,6 +90,21 @@
 
         <!-- Main Content -->
         <main class="portal-main">
+            <!-- Recent Sidebar Trigger -->
+            <div style="position: absolute; left: 20px; top: 70px;">
+                <a href="#" id="recent-link" style="color:#3b6bd6; text-decoration: underline;">Most Recent 50 Articles</a>
+            </div>
+
+            <!-- Recent Sidebar (hidden by default) -->
+            <aside id="recent-sidebar" style="display:none; position:fixed; left:0; top:0; bottom:0; width:360px; background:#fff; box-shadow: 2px 0 12px rgba(0,0,0,0.2); z-index:1100; padding:16px; overflow:auto;">
+                <div style="display:flex; justify-content: space-between; align-items:center; margin-bottom:12px;">
+                    <h3 style="margin:0;">Recent (Human)</h3>
+                    <button id="recent-close" class="btn btn-secondary" style="font-size:0.85rem;">Close</button>
+                </div>
+                <div id="recent-loading" style="padding:8px; color:#666;">Loading…</div>
+                <ul id="recent-list" style="list-style:none; padding:0; margin:0;"></ul>
+            </aside>
+
             <!-- Article Display Panel -->
             <div class="article-panel">
                 <div class="panel-header">
