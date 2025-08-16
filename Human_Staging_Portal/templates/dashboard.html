@@ -82,6 +82,10 @@
                     <button id="tab-queue" class="btn btn-secondary">Article Queue</button>
                     <button id="tab-direct" class="btn btn-secondary">Direct-To-Site Search</button>
                 </div>
+                <!-- Recent Sidebar Trigger (Tab 1 only) anchored to bottom-left of header, rendered into purple -->
+                <div id="recent-trigger" style="position:absolute; left:16px; bottom:-14px;">
+                    <a href="#" id="recent-link" style="color:#fff; text-decoration: underline;">Most Recent 50 Articles</a>
+                </div>
             </div>
             <div class="header-right">
                 <div class="queue-status">
@@ -95,10 +99,6 @@
 
         <!-- Main Content -->
         <main class="portal-main">
-            <!-- Recent Sidebar Trigger (Tab 1 only, floating over purple, does not affect grid flow) -->
-            <div id="recent-trigger" style="position:absolute; left: 16px; top: 8px;">
-                <a href="#" id="recent-link" style="color:#fff; text-decoration: underline;">Most Recent 50 Articles</a>
-            </div>
 
             <!-- Recent Sidebar (hidden by default) -->
             <aside id="recent-sidebar" style="display:none; position:fixed; left:0; top:0; bottom:0; width:360px; background:#fff; box-shadow: 2px 0 12px rgba(0,0,0,0.2); z-index:1100; padding:16px; overflow:auto;">
