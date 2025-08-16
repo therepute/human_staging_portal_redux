@@ -77,6 +77,11 @@
         <header class="portal-header">
             <div class="header-left">
                 <h1>ReputeAI Human Staging Portal</h1>
+                <!-- Tabs directly under the header title (white section) -->
+                <div style="margin-top: 8px; display:flex; gap:8px;">
+                    <button id="tab-queue" class="btn btn-secondary">Article Queue</button>
+                    <button id="tab-direct" class="btn btn-secondary">Direct-To-Site Search</button>
+                </div>
             </div>
             <div class="header-right">
                 <div class="queue-status">
@@ -90,9 +95,9 @@
 
         <!-- Main Content -->
         <main class="portal-main">
-            <!-- Recent Sidebar Trigger -->
-            <div style="position: absolute; left: 20px; top: 70px;">
-                <a href="#" id="recent-link" style="color:#3b6bd6; text-decoration: underline;">Most Recent 50 Articles</a>
+            <!-- Recent Sidebar Trigger (Tab 1 only, on purple background) -->
+            <div id="recent-trigger" style="position: absolute; left: 20px; top: 70px;">
+                <a href="#" id="recent-link" style="color:#fff; text-decoration: underline;">Most Recent 50 Articles</a>
             </div>
 
             <!-- Recent Sidebar (hidden by default) -->
@@ -105,8 +110,8 @@
                 <ul id="recent-list" style="list-style:none; padding:0; margin:0;"></ul>
             </aside>
 
-            <!-- Article Display Panel -->
-            <div class="article-panel">
+            <!-- Article Content Panel (Tab 1) -->
+            <div class="article-panel" id="panel-article">
                 <div class="panel-header">
                     <h2>Article Content</h2>
                     <div class="article-meta" id="article-meta">
@@ -128,8 +133,8 @@
                 </div>
             </div>
 
-            <!-- Extraction Panel -->
-            <div class="extraction-panel">
+            <!-- Extraction Panel (Tab 1) -->
+            <div class="extraction-panel" id="panel-extraction">
                 <div class="panel-header">
                     <h2>Content Extraction</h2>
                     <div class="extraction-timer">
@@ -222,6 +227,7 @@
                     </div>
                 </div>
             </div>
+            {% include 'components/direct_search.html' %}
         </main>
 
         <!-- Status Bar -->
@@ -266,5 +272,54 @@
     </div>
 
     <script src="/static/js/portal.js?v=1.3.1"></script>
+    <script>
+    (function(){
+        const tabQueue = document.getElementById('tab-queue');
+        const tabDirect = document.getElementById('tab-direct');
+        const direct = document.getElementById('direct-search');
+        const queuePanels = [document.getElementById('panel-article'), document.getElementById('panel-extraction')];
+        const recentTrigger = document.getElementById('recent-trigger');
+
+        function showQueue(){
+            direct.style.display = 'none';
+            queuePanels.forEach(el => el.style.display = '');
+            if (recentTrigger) recentTrigger.style.display = '';
+        }
+        function showDirect(){
+            direct.style.display = '';
+            queuePanels.forEach(el => el.style.display = 'none');
+            if (recentTrigger) recentTrigger.style.display = 'none';
+        }
+
+        tabQueue && tabQueue.addEventListener('click', showQueue);
+        tabDirect && tabDirect.addEventListener('click', showDirect);
+        // Default to Article Queue visible on load
+        showQueue();
+
+        // Direct search interactions
+        const nextBtn = document.getElementById('next-publication-btn');
+        const pubDiv = document.getElementById('direct-publication');
+        nextBtn && nextBtn.addEventListener('click', async () => {
+            try {
+                const res = await fetch('/api/direct/publication/next');
+                const data = await res.json();
+                if (!data.success || !data.publication) {
+                    pubDiv.innerHTML = '<p>No publications available.</p>';
+                    return;
+                }
+                const p = data.publication;
+                pubDiv.innerHTML = `
+                    <div>
+                        <p><strong>Publication:</strong> ${p.name}</p>
+                        <p><strong>Topics:</strong> ${(p.topics || []).join(', ') || '—'}</p>
+                        <p><a class="btn btn-primary" href="${p.url}" target="_blank">Open Search</a></p>
+                    </div>
+                `;
+            } catch (e) {
+                pubDiv.innerHTML = '<p style="color:#c00;">Failed to load next publication.</p>';
+            }
+        });
+    })();
+    </script>
 </body>
 </html> 

@@ -37,6 +37,40 @@ logger = logging.getLogger(__name__)
 # Global database connector
 db_connector: Optional[DatabaseConnector] = None
 
+# Safe degraded-mode stub so endpoints don't 500 when DB is unavailable
+class NullDatabaseConnector:
+    async def test_connection(self) -> bool:
+        return False
+
+    async def get_available_tasks(self, limit: int = 50):
+        return []
+
+    async def assign_task(self, task_id: str, scraper_id: str) -> bool:
+        return False
+
+    async def submit_extraction(self, task_id: str, scraper_id: str, extracted_data: Dict[str, Any]) -> bool:
+        return False
+
+    async def handle_failure(self, task_id: str, scraper_id: str, error_message: str) -> bool:
+        return False
+
+    async def analyze_required_fields(self, task_id: str) -> Dict[str, Any]:
+        return {"task_id": task_id, "required_fields": ["body"], "pre_filled_fields": {}, "field_sources": {}}
+
+    async def get_task_by_id(self, task_id: str):
+        return None
+
+    async def get_soups_by_soup_dedupe_id(self, task_id: str):
+        return None
+
+    async def get_scraper_tasks(self, scraper_id: str):
+        return []
+
+    async def release_expired_tasks(self, timeout_minutes: int = 30) -> int:
+        return 0
+
+null_db = NullDatabaseConnector()
+
 # Global cache of subscription credentials loaded from YAML
 subscription_credentials_index: Dict[str, Dict[str, Any]] = {}
 subscription_name_index: Dict[str, Dict[str, Any]] = {}
@@ -174,16 +208,23 @@ async def lifespan(app: FastAPI):
     """Initialize database connection on startup"""
     global db_connector
     try:
-        db_connector = DatabaseConnector()
+        # Best-effort DB init: allow UI to boot even if Supabase is not configured
+        try:
+            db_connector = DatabaseConnector()
+        except Exception as e:
+            db_connector = None
+            logger.error(f"❌ Failed to initialize database connector: {e}")
+
         # Attempt to load subscription credentials YAML (one directory up from this file)
         base_dir = os.path.dirname(os.path.abspath(__file__))
         yaml_path = os.path.abspath(os.path.join(base_dir, "..", "login_credentials.yaml"))
         _load_subscription_credentials(yaml_path)
-        logger.info("✅ Human Staging Portal API started successfully")
+
+        if db_connector is None:
+            logger.info("✅ Human Staging Portal API started in degraded mode (no database)")
+        else:
+            logger.info("✅ Human Staging Portal API started successfully")
         yield
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize database connector: {e}")
-        raise
     finally:
         logger.info("🔄 Human Staging Portal API shutting down")
 
@@ -209,6 +250,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Register feature routers
+try:
+    from Human_Staging_Portal.features.direct_search.router import router as direct_search_router
+except ModuleNotFoundError:
+    from features.direct_search.router import router as direct_search_router
+
+app.include_router(direct_search_router)
 
 # Pydantic models for API requests/responses
 class TaskResponse(BaseModel):
@@ -243,9 +292,8 @@ class StatusResponse(BaseModel):
 
 def get_db():
     """Dependency to get database connector"""
-    if db_connector is None:
-        raise HTTPException(status_code=500, detail="Database not initialized")
-    return db_connector
+    # Return a degraded-mode stub when DB isn't initialized so endpoints gracefully degrade
+    return db_connector or null_db
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
