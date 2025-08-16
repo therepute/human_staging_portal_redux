@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Portal Admin Dashboard</title>
+    <link rel="stylesheet" href="/static/css/portal.css" />
+    <style>
+        body { background:#f7f8fb; }
+        .admin-container { max-width: 1100px; margin: 24px auto; background:#fff; border-radius:8px; padding:16px; box-shadow:0 4px 16px rgba(0,0,0,0.06); }
+        .grid { display:grid; grid-template-columns: 1fr 1fr; gap:16px; }
+        .card { background:#fff; border:1px solid #eee; border-radius:8px; padding:12px; }
+        h2 { margin: 8px 0 16px 0; }
+        table { width:100%; border-collapse: collapse; }
+        th, td { text-align:left; padding:6px 8px; border-bottom:1px solid #eee; font-size:14px; }
+        .muted { color:#666; font-size: 12px; }
+    </style>
+    <script>
+    async function loadAdmin() {
+        await Promise.all([loadHumanPerDay(), loadSoupsGroupings(), loadPendingGroupings()]);
+    }
+    async function loadHumanPerDay() {
+        const res = await fetch('/api/admin/human_per_day?days=14');
+        const data = await res.json();
+        const tbody = document.getElementById('human-per-day');
+        tbody.innerHTML = '';
+        (data.items || []).forEach(row => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${row.date}</td><td>${row.count}</td>`;
+            tbody.appendChild(tr);
+        });
+    }
+    async function loadSoupsGroupings() {
+        const res = await fetch('/api/admin/soups_groupings');
+        const data = await res.json();
+        const clients = document.getElementById('soups-by-clients');
+        const focus = document.getElementById('soups-by-focus');
+        clients.innerHTML = '';
+        (data.by_clients || []).forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.key}</td><td>${r.count}</td>`;
+            clients.appendChild(tr);
+        });
+        focus.innerHTML = '';
+        (data.by_focus_industry || []).forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.key}</td><td>${r.count}</td>`;
+            focus.appendChild(tr);
+        });
+    }
+    async function loadPendingGroupings() {
+        const res = await fetch('/api/admin/pending_groupings');
+        const data = await res.json();
+        const clients = document.getElementById('pending-by-clients');
+        const focus = document.getElementById('pending-by-focus');
+        clients.innerHTML = '';
+        (data.by_clients || []).forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.key}</td><td>${r.count}</td>`;
+            clients.appendChild(tr);
+        });
+        focus.innerHTML = '';
+        (data.by_focus_industry || []).forEach(r => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${r.key}</td><td>${r.count}</td>`;
+            focus.appendChild(tr);
+        });
+    }
+    </script>
+</head>
+<body onload="loadAdmin()">
+    <div class="admin-container">
+        <h1>Admin Dashboard</h1>
+        <p class="muted">Read-only metrics powered by the current database.</p>
+        <div class="grid">
+            <div class="card">
+                <h2>Human Submissions per Day (14 days)</h2>
+                <table>
+                    <thead><tr><th>Date</th><th>Count</th></tr></thead>
+                    <tbody id="human-per-day"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h2>Completed in the_soups by Client</h2>
+                <table>
+                    <thead><tr><th>Client</th><th>Count</th></tr></thead>
+                    <tbody id="soups-by-clients"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h2>Completed in the_soups by Focus Industry</h2>
+                <table>
+                    <thead><tr><th>Focus Industry</th><th>Count</th></tr></thead>
+                    <tbody id="soups-by-focus"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h2>Awaiting Scrape by Client (soup_dedupe)</h2>
+                <table>
+                    <thead><tr><th>Client</th><th>Count</th></tr></thead>
+                    <tbody id="pending-by-clients"></tbody>
+                </table>
+            </div>
+            <div class="card">
+                <h2>Awaiting Scrape by Focus Industry (soup_dedupe)</h2>
+                <table>
+                    <thead><tr><th>Focus Industry</th><th>Count</th></tr></thead>
+                    <tbody id="pending-by-focus"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+
+
