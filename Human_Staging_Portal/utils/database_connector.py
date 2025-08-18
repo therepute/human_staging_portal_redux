@@ -58,26 +58,56 @@ class DatabaseConnector:
                     filtered.append(row)
 
             if filtered:
-                # Custom prioritization:
-                # 1) client_priority DESC
-                # 2) focus_industry present (non-null/non-empty) first
-                # 3) created_at DESC
-                def has_focus_industry(row: Dict[str, Any]) -> int:
+                # Requested prioritization:
+                # 1) clients present → created_at DESC (newer first)
+                # 2) client_priority > 0 → higher first, then created_at DESC
+                # 3) focus_industry present → created_at DESC
+                # 4) everything else → created_at DESC
+
+                def has_focus_industry(row: Dict[str, Any]) -> bool:
                     fi = row.get("focus_industry")
                     if fi is None:
-                        return 0
+                        return False
                     if isinstance(fi, list):
-                        return 1 if len(fi) > 0 else 0
-                    return 1 if str(fi).strip() != "" else 0
+                        return len(fi) > 0
+                    return str(fi).strip() != ""
 
-                def priority_tuple(row: Dict[str, Any]):
-                    client_score = row.get("client_priority") or 0
-                    focus_score = has_focus_industry(row)
-                    created = row.get("created_at") or ""
-                    return (client_score, focus_score, created)
+                def has_clients(row: Dict[str, Any]) -> bool:
+                    cv = row.get("clients")
+                    if cv is None:
+                        return False
+                    if isinstance(cv, list):
+                        return len(cv) > 0
+                    text = str(cv).strip()
+                    if not text:
+                        return False
+                    return text.lower() != "unspecified"
 
-                filtered_sorted = sorted(filtered, key=priority_tuple, reverse=True)
-                logger.info(f"Found {len(filtered_sorted)} available tasks (post-filtered from {len(rows)}); returning top {limit}")
+                def created_ts(row: Dict[str, Any]) -> float:
+                    ts = row.get("created_at") or ""
+                    try:
+                        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                        return dt.timestamp()
+                    except Exception:
+                        return 0.0
+
+                def priority_key(row: Dict[str, Any]):
+                    created = created_ts(row)
+                    cp = row.get("client_priority") or 0
+                    if has_clients(row):
+                        return (0, -created, 0)
+                    elif cp > 0:
+                        return (1, -int(cp), -created)
+                    elif has_focus_industry(row):
+                        return (2, -created, 0)
+                    else:
+                        return (3, -created, 0)
+
+                filtered_sorted = sorted(filtered, key=priority_key)
+                logger.info(
+                    f"Applied prioritization: clients→created_at, client_priority→created_at, focus_industry→created_at, else→created_at. "
+                    f"Found {len(filtered_sorted)} available tasks (post-filtered from {len(rows)}); returning top {limit}"
+                )
                 return filtered_sorted[:limit]
             else:
                 logger.info("No available tasks found after filtering")
