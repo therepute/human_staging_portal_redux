@@ -379,7 +379,9 @@ async def register(register_request: RegisterRequest, db: DatabaseConnector = De
             return AuthResponse(success=False, message="User already exists. Please login instead.")
         
         # Register new user
+        logger.info(f"Attempting to register user: {register_request.email}")
         user = await register_user(register_request.email, register_request.first_name, register_request.last_name, db)
+        logger.info(f"Registration result for {register_request.email}: {user is not None}")
         if user:
             session_token = create_session(user)
             
@@ -399,9 +401,13 @@ async def register(register_request: RegisterRequest, db: DatabaseConnector = De
             response.set_cookie(key="session_token", value=session_token, httponly=True, max_age=8*3600)  # 8 hours
             return response
         else:
+            logger.error(f"Registration failed for {register_request.email}: register_user returned None")
             return AuthResponse(success=False, message="Registration failed. Please try again.")
     except Exception as e:
-        logger.error(f"Registration error: {e}")
+        logger.error(f"Registration error for {register_request.email}: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"Registration traceback: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/logout")

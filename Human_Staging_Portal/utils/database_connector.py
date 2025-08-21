@@ -46,6 +46,7 @@ class DatabaseConnector:
         """Register a new user in Manual_Scrape_Users table"""
         try:
             user_data = {
+                "username": email,  # Use email as username since we don't use separate usernames
                 "email": email,
                 "first_name": first_name,
                 "last_name": last_name,
