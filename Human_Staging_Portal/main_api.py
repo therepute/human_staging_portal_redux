@@ -10,11 +10,11 @@ from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from urllib.parse import urlparse
@@ -27,8 +27,16 @@ import logging
 # 2) Started from package dir (module name: main_api, with sibling package utils/)
 try:
     from Human_Staging_Portal.utils.database_connector import DatabaseConnector  # mode 1
+    from Human_Staging_Portal.utils.auth import (
+        authenticate_user, register_user, create_session, get_current_user, 
+        destroy_session, require_auth, get_session_stats, cleanup_expired_sessions
+    )
 except ModuleNotFoundError:
     from utils.database_connector import DatabaseConnector  # mode 2
+    from utils.auth import (
+        authenticate_user, register_user, create_session, get_current_user,
+        destroy_session, require_auth, get_session_stats, cleanup_expired_sessions
+    )
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -290,6 +298,19 @@ class StatusResponse(BaseModel):
     tasks_available: int
     system_health: str
 
+class LoginRequest(BaseModel):
+    email: str
+
+class RegisterRequest(BaseModel):
+    email: str
+    first_name: str
+    last_name: str
+
+class AuthResponse(BaseModel):
+    success: bool
+    message: str
+    user: Optional[Dict[str, Any]] = None
+
 def get_db():
     """Dependency to get database connector"""
     # Return a degraded-mode stub when DB isn't initialized so endpoints gracefully degrade
@@ -297,8 +318,130 @@ def get_db():
 
 @app.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    """Serve the main dashboard interface"""
-    return templates.TemplateResponse("dashboard.html", {"request": request})
+    """Serve the main dashboard interface or redirect to login"""
+    user = get_current_user(request)
+    if not user:
+        return RedirectResponse(url="/login", status_code=302)
+    return templates.TemplateResponse("dashboard.html", {"request": request, "user": user})
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    """Serve the login page"""
+    user = get_current_user(request)
+    if user:
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("login.html", {"request": request})
+
+@app.get("/register", response_class=HTMLResponse)
+async def register_page(request: Request):
+    """Serve the registration page"""
+    user = get_current_user(request)
+    if user:
+        return RedirectResponse(url="/", status_code=302)
+    return templates.TemplateResponse("register.html", {"request": request})
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(login_request: LoginRequest, db: DatabaseConnector = Depends(get_db)):
+    """Login with email (no password required)"""
+    try:
+        user = await authenticate_user(login_request.email, db)
+        if user:
+            session_token = create_session(user)
+            
+            # Log the login activity
+            await db.log_login(user["email"])
+            
+            response = JSONResponse(content={
+                "success": True,
+                "message": "Login successful",
+                "user": {
+                    "email": user["email"],
+                    "first_name": user.get("first_name", ""),
+                    "last_name": user.get("last_name", ""),
+                    "role": user.get("role", "user")
+                }
+            })
+            response.set_cookie(key="session_token", value=session_token, httponly=True, max_age=8*3600)  # 8 hours
+            return response
+        else:
+            return AuthResponse(success=False, message="User not found. Please register first.")
+    except Exception as e:
+        logger.error(f"Login error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register(register_request: RegisterRequest, db: DatabaseConnector = Depends(get_db)):
+    """Register a new user"""
+    try:
+        # Check if user already exists
+        existing_user = await db.get_user_by_email(register_request.email)
+        if existing_user:
+            return AuthResponse(success=False, message="User already exists. Please login instead.")
+        
+        # Register new user
+        user = await register_user(register_request.email, register_request.first_name, register_request.last_name, db)
+        if user:
+            session_token = create_session(user)
+            
+            # Log the login activity (auto-login after registration)
+            await db.log_login(user["email"])
+            
+            response = JSONResponse(content={
+                "success": True,
+                "message": "Registration successful",
+                "user": {
+                    "email": user["email"],
+                    "first_name": user.get("first_name", ""),
+                    "last_name": user.get("last_name", ""),
+                    "role": user.get("role", "user")
+                }
+            })
+            response.set_cookie(key="session_token", value=session_token, httponly=True, max_age=8*3600)  # 8 hours
+            return response
+        else:
+            return AuthResponse(success=False, message="Registration failed. Please try again.")
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/auth/logout")
+async def logout(request: Request, db: DatabaseConnector = Depends(get_db)):
+    """Logout and destroy session"""
+    session_token = request.cookies.get("session_token")
+    user_email = None
+    
+    if session_token:
+        # Get user info before destroying session
+        user = get_current_user(request)
+        if user:
+            user_email = user["email"]
+        
+        destroy_session(session_token)
+    
+    # Log the logout activity if we have the user email
+    if user_email:
+        await db.log_logout(user_email)
+    
+    response = JSONResponse(content={"success": True, "message": "Logged out successfully"})
+    response.delete_cookie(key="session_token")
+    return response
+
+@app.get("/api/auth/user")
+async def get_current_user_api(request: Request):
+    """Get current authenticated user info"""
+    user = get_current_user(request)
+    if user:
+        return {
+            "success": True,
+            "user": {
+                "email": user["email"],
+                "first_name": user.get("first_name", ""),
+                "last_name": user.get("last_name", ""),
+                "role": user.get("role", "user")
+            }
+        }
+    else:
+        raise HTTPException(status_code=401, detail="Not authenticated")
 
 @app.get("/api/", response_model=Dict[str, str])
 async def api_root():
@@ -334,9 +477,13 @@ async def health_check(db: DatabaseConnector = Depends(get_db)):
         )
 
 @app.get("/api/tasks/next", response_model=TaskResponse)
-async def get_next_task(scraper_id: str, db: DatabaseConnector = Depends(get_db)):
+async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db)):
     """Get the next highest priority task for a scraper"""
     try:
+        # Require authentication
+        user = require_auth(request)
+        scraper_id = user["email"]  # Use email as scraper_id
+        
         # Get a batch of available tasks then filter out recently served
         tasks = await db.get_available_tasks(limit=50)
         
@@ -422,10 +569,14 @@ async def get_recent(limit: int = 50, db: DatabaseConnector = Depends(get_db)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tasks/submit", response_model=Dict[str, Any])
-async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector = Depends(get_db)):
+async def submit_extraction(submission: SubmissionRequest, request: Request, db: DatabaseConnector = Depends(get_db)):
     """Submit extracted content for a task"""
     try:
-        logger.info(f"🚀 SUBMIT ENDPOINT: Received submission for task {submission.task_id}")
+        # Require authentication
+        user = require_auth(request)
+        user_email = user["email"]  # Get user email for scraper_user field
+        
+        logger.info(f"🚀 SUBMIT ENDPOINT: Received submission for task {submission.task_id} from user {user_email}")
         logger.info(f"📋 Raw submission data: {submission.model_dump()}")
         
         # Prepare extracted data
@@ -445,18 +596,19 @@ async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector
         
         logger.info(f"📤 Prepared extracted_data: {extracted_data}")
         
-        # Submit to database
+        # Submit to database: scraper_id from request (human_portal_user), scraper_user is authenticated email
         success = await db.submit_extraction(
             submission.task_id, 
-            submission.scraper_id, 
-            extracted_data
+            submission.scraper_id,  # Use the scraper_id from request (human_portal_user)
+            extracted_data,
+            user_email  # Pass user email as scraper_user
         )
         
         logger.info(f"✅ Database submit_extraction returned: {success}")
         
         if success:
             # Mark as recent completion to avoid re-serving due to eventual consistency
-            _mark_recent(submission.scraper_id, submission.task_id)
+            _mark_recent(user_email, submission.task_id)
             return {
                 "success": True,
                 "message": f"Task {submission.task_id} submitted successfully",
@@ -479,21 +631,27 @@ async def submit_extraction(submission: SubmissionRequest, db: DatabaseConnector
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 @app.post("/api/tasks/fail", response_model=Dict[str, Any])
-async def fail_task(failure: FailureRequest, db: DatabaseConnector = Depends(get_db)):
+async def fail_task(failure: FailureRequest, request: Request, db: DatabaseConnector = Depends(get_db)):
     """Mark a task as failed with error details"""
     try:
+        # Require authentication
+        user = require_auth(request)
+        user_email = user["email"]  # Get user email for scraper_user field
+        
+        # Use scraper_id from request (human_portal_user), scraper_user is authenticated email
         success = await db.handle_failure(
             failure.task_id,
-            failure.scraper_id,
-            failure.error_message
+            failure.scraper_id,  # Use the scraper_id from request (human_portal_user)
+            failure.error_message,
+            user_email  # Pass user email as scraper_user
         )
         
         if success:
             # Mark as recent failure to avoid re-serving
-            _mark_recent(failure.scraper_id, failure.task_id)
+            _mark_recent(user_email, failure.task_id)
             return {
                 "success": True,
-                "message": f"Task {failure.task_id} marked as failed",
+                "message": f"Task {failure.task_id} successfully marked as unable to extract",
                 "task_id": failure.task_id,
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }
@@ -505,6 +663,9 @@ async def fail_task(failure: FailureRequest, db: DatabaseConnector = Depends(get
             
     except Exception as e:
         logger.error(f"Error failing task {failure.task_id}: {e}")
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"Full traceback: {tb}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/scrapers/{scraper_id}/tasks", response_model=Dict[str, Any])
@@ -622,6 +783,21 @@ async def admin_pending_groupings(db: DatabaseConnector = Depends(get_db)):
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})
+
+@app.get("/api/admin/activity_logs", response_model=Dict[str, Any])
+async def admin_activity_logs(limit: int = 100, username: str = None, db: DatabaseConnector = Depends(get_db)):
+    """Get activity logs (admin only)"""
+    try:
+        logs = await db.get_activity_logs(limit, username)
+        return {
+            "success": True,
+            "count": len(logs),
+            "logs": logs,
+            "filters": {"limit": limit, "username": username}
+        }
+    except Exception as e:
+        logger.error(f"Admin activity logs error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/maintenance/release-expired", response_model=Dict[str, Any])
 async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):

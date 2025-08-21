@@ -69,6 +69,48 @@
             justify-content: flex-end;
             margin-top: 1rem;
         }
+        
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            color: white;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        
+        .user-display {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+        }
+        
+        .user-label {
+            font-size: 0.8rem;
+            opacity: 0.9;
+            color: #f0f0f0;
+        }
+        
+        .user-name {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #ffffff;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5);
+        }
+        
+        .user-actions button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            padding: 6px 12px;
+            font-size: 0.9rem;
+        }
+        
+        .user-actions button:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -88,10 +130,13 @@
                 </div>
             </div>
             <div class="header-right">
-                <div class="queue-status">
-                    <div class="queue-item expedited">
-                        <span class="queue-label">Available Tasks</span>
-                        <span class="queue-count" id="available-count">0</span>
+                <div class="user-info">
+                    <div class="user-display">
+                        <span class="user-label">Logged in as:</span>
+                        <span class="user-name" id="user-display">Loading...</span>
+                    </div>
+                    <div class="user-actions">
+                        <button class="btn btn-secondary" onclick="logout()" id="logout-btn">Logout</button>
                     </div>
                 </div>
             </div>
@@ -272,6 +317,48 @@
     </div>
 
     <script src="/static/js/portal.js?v=1.3.1"></script>
+    <script>
+    // Authentication functions
+    async function loadCurrentUser() {
+        try {
+            const response = await fetch('/api/auth/user');
+            if (response.ok) {
+                const data = await response.json();
+                if (data.success && data.user) {
+                    const userDisplay = document.getElementById('user-display');
+                    userDisplay.textContent = data.user.email;
+                    return data.user;
+                }
+            }
+        } catch (error) {
+            console.error('Error loading user:', error);
+        }
+        
+        // If we get here, user is not authenticated
+        window.location.href = '/login';
+        return null;
+    }
+
+    async function logout() {
+        try {
+            const response = await fetch('/api/auth/logout', {
+                method: 'POST'
+            });
+            
+            if (response.ok) {
+                window.location.href = '/login';
+            } else {
+                alert('Logout failed. Please try again.');
+            }
+        } catch (error) {
+            console.error('Logout error:', error);
+            alert('Logout failed. Please try again.');
+        }
+    }
+
+    // Load user on page load
+    loadCurrentUser();
+    </script>
     <script>
     (function(){
         const tabQueue = document.getElementById('tab-queue');

@@ -30,6 +30,91 @@ class DatabaseConnector:
         
         logger.info(f"Initialized database connector for {self.supabase_url}")
 
+    async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Get user from Manual_Scrape_Users table by email"""
+        try:
+            response = self.client.table("Manual_Scrape_Users").select("*").eq("email", email).eq("active", True).execute()
+            
+            if response.data and len(response.data) > 0:
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting user by email {email}: {e}")
+            return None
+
+    async def register_user(self, email: str, first_name: str, last_name: str) -> Optional[Dict[str, Any]]:
+        """Register a new user in Manual_Scrape_Users table"""
+        try:
+            user_data = {
+                "email": email,
+                "first_name": first_name,
+                "last_name": last_name,
+                "role": "user",
+                "active": True
+            }
+            
+            response = self.client.table("Manual_Scrape_Users").insert(user_data).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Registered new user: {email}")
+                return response.data[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error registering user {email}: {e}")
+            return None
+
+    async def log_login(self, username: str) -> bool:
+        """Log a login event to Manual_Scrape_Activity_Logs"""
+        try:
+            login_data = {
+                "username": username,
+                "login_time": datetime.now(timezone.utc).isoformat(),
+                "logout_time": None
+            }
+            
+            response = self.client.table("Manual_Scrape_Activity_Logs").insert(login_data).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Logged login for user: {username}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error logging login for {username}: {e}")
+            return False
+
+    async def log_logout(self, username: str) -> bool:
+        """Log a logout event to Manual_Scrape_Activity_Logs"""
+        try:
+            logout_data = {
+                "username": username,
+                "login_time": None,
+                "logout_time": datetime.now(timezone.utc).isoformat()
+            }
+            
+            response = self.client.table("Manual_Scrape_Activity_Logs").insert(logout_data).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Logged logout for user: {username}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error logging logout for {username}: {e}")
+            return False
+
+    async def get_activity_logs(self, limit: int = 100, username: str = None) -> List[Dict[str, Any]]:
+        """Get activity logs, optionally filtered by username"""
+        try:
+            query = self.client.table("Manual_Scrape_Activity_Logs").select("*").order("id", desc=True).limit(limit)
+            
+            if username:
+                query = query.eq("username", username)
+            
+            response = query.execute()
+            return response.data or []
+        except Exception as e:
+            logger.error(f"Error getting activity logs: {e}")
+            return []
+
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete is True
@@ -147,7 +232,7 @@ class DatabaseConnector:
             logger.error(f"Error checking task {task_id}: {e}")
             return False
 
-    async def submit_extraction(self, task_id: str, scraper_id: str, extracted_data: Dict[str, Any]) -> bool:
+    async def submit_extraction(self, task_id: str, scraper_id: str, extracted_data: Dict[str, Any], scraper_user: str = None) -> bool:
         """
         Submit extracted content to the_soups table and update soup_dedupe status
         Maps fields according to user specifications: soup_dedupe → the_soups
@@ -185,6 +270,7 @@ class DatabaseConnector:
                 "soup_dedupe_id": task_id,  # Links back to soup_dedupe.id ✅
                 # Portal submit metadata for Recent-50 filtering
                 "scraper_id": scraper_id,
+                "scraper_user": scraper_user or scraper_id,  # User email goes into scraper_user field
                 "submitted_at": current_time,
                 # Optional timing info if provided by the UI
                 "duration_sec": extracted_data.get("duration_sec")
@@ -314,7 +400,7 @@ class DatabaseConnector:
             logger.error(f"Error fetching recent human submissions: {e}")
             return []
 
-    async def handle_failure(self, task_id: str, scraper_id: str, error_message: str) -> bool:
+    async def handle_failure(self, task_id: str, scraper_id: str, error_message: str, scraper_user: str = None) -> bool:
         """
         Handle extraction failure by marking as complete (unable to extract)
         This removes the article from the available queue
@@ -329,8 +415,12 @@ class DatabaseConnector:
                 "wf_extraction_failure": error_message,  # Capture rejection reason (existing column)
                 "wf_timestamp_extraction_failure": current_time,  # Failure timestamp
                 "last_modified": current_time,
-                "WF_TIMESTAMP_Extraction_Complete": current_time  # Set completion timestamp
+                "WF_TIMESTAMP_Extraction_Complete": current_time,  # Set completion timestamp
             }
+            
+            # Add scraper_user if available (should work in soup_dedupe table)
+            if scraper_user:
+                update_data["scraper_user"] = scraper_user
             
             # Try to increment retry_count if it exists
             try:

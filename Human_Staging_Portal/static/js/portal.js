@@ -81,7 +81,7 @@ async function getNextArticle() {
     try {
         updateStatus('Loading article...');
         
-        const response = await fetch(`${API_BASE}/tasks/next?scraper_id=human_portal_user`);
+        const response = await fetch(`${API_BASE}/tasks/next`);
         
         if (response.status === 404) {
             updateStatus('No articles available');
@@ -574,7 +574,7 @@ async function submitExtraction() {
     // Start with data from soup_dedupe, override with scraper data where provided
     const extractionData = {
         task_id: currentArticle.id,
-        scraper_id: 'human_portal_user',
+        scraper_id: 'human_portal_user',  // Identifies this as coming from the portal pipeline
         
         // These come from soup_dedupe (carry over as-is)
         story_link: currentArticle.permalink_url,
@@ -812,7 +812,7 @@ async function confirmUnable() {
     }
     
     try {
-        updateStatus('Marking as unable to extract...');
+        updateStatus('Submitting unable to extract...');
         
         const reasonMap = {
             paywall_no_subscription: 'Cannot Access - Paywall with no subscription',
@@ -833,7 +833,7 @@ async function confirmUnable() {
         
         console.log('🚫 Attempting to mark as unable:', {
             task_id: currentArticle.id,
-            scraper_id: 'human_portal_user',
+            scraper_id: 'human_portal_user',  // Identifies this as coming from the portal pipeline
             error_message: fullReason
         });
         
@@ -844,7 +844,7 @@ async function confirmUnable() {
             },
             body: JSON.stringify({
                 task_id: currentArticle.id,
-                scraper_id: 'human_portal_user',
+                scraper_id: 'human_portal_user',  // Identifies this as coming from the portal pipeline
                 error_message: fullReason
             })
         });
@@ -860,7 +860,7 @@ async function confirmUnable() {
         const result = await response.json();
         
         if (result.success) {
-            showMessage(`🚫 Marked as unable to extract: ${friendly}`, 'info');
+            showMessage(`✅ Successfully marked as unable to extract: ${friendly}`, 'success');
             
             // IMMEDIATELY close modal and clear current article
             closeUnableModal();
