@@ -116,24 +116,25 @@ class DatabaseConnector:
             logger.error(f"Error getting activity logs: {e}")
             return []
 
-    async def update_served_timestamp(self, task_id: str, served_timestamp: str, user_email: str) -> bool:
-        """Update soup_dedupe with serving timestamp when article is served to user"""
+    async def update_served_status(self, task_id: str, workflow_status: int, user_email: str) -> bool:
+        """Update soup_dedupe with workflow status when article is served/submitted"""
         try:
             update_data = {
-                "WF_TIMESTAMP_served_human_scrape": served_timestamp,
+                "WF_served_human_scrape": workflow_status,
                 "scraper_user": user_email  # Also track which user was served this article
             }
             
             response = self.client.table(self.staging_table).update(update_data).eq("id", task_id).execute()
             
             if response.data and len(response.data) > 0:
-                logger.info(f"Updated serving timestamp for task {task_id}: {served_timestamp}")
+                status_desc = "opened in window" if workflow_status == 1 else "extraction submitted"
+                logger.info(f"Updated workflow status for task {task_id}: {workflow_status} ({status_desc})")
                 return True
             else:
-                logger.warning(f"No rows updated for serving timestamp on task {task_id}")
+                logger.warning(f"No rows updated for workflow status on task {task_id}")
                 return False
         except Exception as e:
-            logger.error(f"Error updating serving timestamp for task {task_id}: {e}")
+            logger.error(f"Error updating workflow status for task {task_id}: {e}")
             return False
 
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:

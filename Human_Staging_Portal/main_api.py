@@ -515,12 +515,12 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
             task["assigned_at"] = served_timestamp
             task["scraper_id"] = scraper_id
             
-            # Store serving timestamp in soup_dedupe table
+            # Store workflow status = 1 (opened in window) in soup_dedupe table
             try:
-                await db.update_served_timestamp(task_id, served_timestamp, user_email)
-                logger.info(f"Recorded serving timestamp for task {task_id} to user {user_email}")
+                await db.update_served_status(task_id, 1, user_email)
+                logger.info(f"Recorded workflow status 1 (opened) for task {task_id} to user {user_email}")
             except Exception as e:
-                logger.warning(f"Failed to record serving timestamp for task {task_id}: {e}")
+                logger.warning(f"Failed to record workflow status for task {task_id}: {e}")
             
             # Mark recent to reduce immediate reselection
             _mark_recent(scraper_id, task_id)
@@ -620,6 +620,14 @@ async def submit_extraction(submission: SubmissionRequest, request: Request, db:
         )
         
         logger.info(f"✅ Database submit_extraction returned: {success}")
+        
+        # Update workflow status = 2 (extraction submitted)
+        if success:
+            try:
+                await db.update_served_status(submission.task_id, 2, user_email)
+                logger.info(f"Updated workflow status to 2 (submitted) for task {submission.task_id}")
+            except Exception as e:
+                logger.warning(f"Failed to update workflow status for task {submission.task_id}: {e}")
         
         if success:
             # Mark as recent completion to avoid re-serving due to eventual consistency
