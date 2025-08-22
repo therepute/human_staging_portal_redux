@@ -511,8 +511,17 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
         
         if assigned:
             # Add assignment metadata
-            task["assigned_at"] = datetime.now(timezone.utc).isoformat()
+            served_timestamp = datetime.now(timezone.utc).isoformat()
+            task["assigned_at"] = served_timestamp
             task["scraper_id"] = scraper_id
+            
+            # Store serving timestamp in soup_dedupe table
+            try:
+                await db.update_served_timestamp(task_id, served_timestamp, user_email)
+                logger.info(f"Recorded serving timestamp for task {task_id} to user {user_email}")
+            except Exception as e:
+                logger.warning(f"Failed to record serving timestamp for task {task_id}: {e}")
+            
             # Mark recent to reduce immediate reselection
             _mark_recent(scraper_id, task_id)
             # Attach subscription credentials if available

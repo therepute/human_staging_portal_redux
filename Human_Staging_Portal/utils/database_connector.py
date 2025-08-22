@@ -116,6 +116,26 @@ class DatabaseConnector:
             logger.error(f"Error getting activity logs: {e}")
             return []
 
+    async def update_served_timestamp(self, task_id: str, served_timestamp: str, user_email: str) -> bool:
+        """Update soup_dedupe with serving timestamp when article is served to user"""
+        try:
+            update_data = {
+                "WF_TIMESTAMP_served_human_scrape": served_timestamp,
+                "scraper_user": user_email  # Also track which user was served this article
+            }
+            
+            response = self.client.table(self.staging_table).update(update_data).eq("id", task_id).execute()
+            
+            if response.data and len(response.data) > 0:
+                logger.info(f"Updated serving timestamp for task {task_id}: {served_timestamp}")
+                return True
+            else:
+                logger.warning(f"No rows updated for serving timestamp on task {task_id}")
+                return False
+        except Exception as e:
+            logger.error(f"Error updating serving timestamp for task {task_id}: {e}")
+            return False
+
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete is True
