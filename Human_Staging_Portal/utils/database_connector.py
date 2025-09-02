@@ -143,22 +143,31 @@ class DatabaseConnector:
         Handles both boolean True and string "TRUE" values for WF_Pre_Check_Complete
         """
         try:
-            # First fetch a superset (since some PostgREST operators aren't available in this client)
-            response = self.client.table(self.staging_table).select(
-                "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
-                "summary, content, subscription_source, source, client_priority, focus_industry, "
-                "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
-                "WF_Pre_Check_Complete, WF_Extraction_Complete, next_retry_at, last_modified, created_at"
-            ).eq("extraction_path", 2).order("client_priority", desc=True).order("created_at", desc=True).limit(200).execute()
+            # Apply server-side filters to unlock the full eligible set efficiently
+            response = (
+                self.client
+                .table(self.staging_table)
+                .select(
+                    "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
+                    "summary, content, subscription_source, source, client_priority, focus_industry, "
+                    "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
+                    "WF_Pre_Check_Complete, WF_Extraction_Complete, next_retry_at, last_modified, created_at"
+                )
+                .eq("extraction_path", 2)
+                .eq("dedupe_status", "original")
+                .order("created_at", desc=True)
+                .limit(1000)
+                .execute()
+            )
 
             rows: List[Dict[str, Any]] = response.data or []
 
-            # Post-filter to emulate: WF_Pre_Check_Complete in [True, "TRUE"] and (WF_Extraction_Complete is null or false)
+            # Safety net: keep a light post-filter in case of unexpected values
             filtered: List[Dict[str, Any]] = []
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
                 wf_done = row.get("WF_Extraction_Complete")
-                pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
+                pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and str(wf_pre).upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
                 dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
                 if pre_ok and not_done and dedupe_ok:
@@ -212,8 +221,7 @@ class DatabaseConnector:
 
                 filtered_sorted = sorted(filtered, key=priority_key)
                 logger.info(
-                    f"Applied prioritization: clients→created_at, client_priority→created_at, focus_industry→created_at, else→created_at. "
-                    f"Found {len(filtered_sorted)} available tasks (post-filtered from {len(rows)}); returning top {limit}"
+                    f"Applied prioritization after server filters. Eligible fetched: {len(rows)}; returning top {limit}"
                 )
                 return filtered_sorted[:limit]
             else:
@@ -223,6 +231,87 @@ class DatabaseConnector:
         except Exception as e:
             logger.error(f"Error fetching available tasks: {e}")
             return []
+
+    async def availability_report(self, limit_fetch: int = 500) -> Dict[str, Any]:
+        """
+        Diagnostics: analyze why articles are excluded. Returns counts and samples by condition.
+        """
+        try:
+            resp = (
+                self.client
+                .table(self.staging_table)
+                .select(
+                    "id, title, WF_Pre_Check_Complete, WF_Extraction_Complete, dedupe_status, extraction_path, created_at"
+                )
+                .eq("extraction_path", 2)
+                .order("created_at", desc=True)
+                .limit(limit_fetch)
+                .execute()
+            )
+            rows: List[Dict[str, Any]] = resp.data or []
+
+            def is_pre_ok(v) -> bool:
+                return (v is True) or (isinstance(v, str) and v.upper() == "TRUE")
+
+            def is_not_done(v) -> bool:
+                return (v is None) or (v is False)
+
+            def is_original(v) -> bool:
+                return str(v or "").strip().lower() == "original"
+
+            total = len(rows)
+            pre_ok = [r for r in rows if is_pre_ok(r.get("WF_Pre_Check_Complete"))]
+            not_done = [r for r in rows if is_not_done(r.get("WF_Extraction_Complete"))]
+            original = [r for r in rows if is_original(r.get("dedupe_status"))]
+
+            passing_all = [
+                r for r in rows
+                if is_pre_ok(r.get("WF_Pre_Check_Complete"))
+                and is_not_done(r.get("WF_Extraction_Complete"))
+                and is_original(r.get("dedupe_status"))
+            ]
+
+            # Distribution helpers
+            from collections import Counter
+            dedupe_dist = Counter([str(r.get("dedupe_status") or "").strip() or "(empty)" for r in rows])
+            pre_dist = Counter([
+                "TRUE" if is_pre_ok(r.get("WF_Pre_Check_Complete")) else str(r.get("WF_Pre_Check_Complete"))
+                for r in rows
+            ])
+            done_dist = Counter([
+                "done" if not is_not_done(r.get("WF_Extraction_Complete")) else "not_done"
+                for r in rows
+            ])
+
+            # Samples for quick inspection
+            def ids(items: List[Dict[str, Any]], n: int = 10) -> List[str]:
+                return [str(r.get("id")) for r in items[:n]]
+
+            return {
+                "success": True,
+                "total_considered": total,
+                "counts": {
+                    "extraction_path_eq_2": total,
+                    "pre_check_ok": len(pre_ok),
+                    "not_completed": len(not_done),
+                    "dedupe_original": len(original),
+                    "passing_all": len(passing_all),
+                },
+                "distributions": {
+                    "dedupe_status": dedupe_dist.most_common(),
+                    "WF_Pre_Check_Complete": pre_dist.most_common(),
+                    "WF_Extraction_Complete": done_dist.most_common(),
+                },
+                "samples": {
+                    "passing_all_ids": ids(passing_all),
+                    "failing_pre_check_ids": ids([r for r in rows if not is_pre_ok(r.get("WF_Pre_Check_Complete"))]),
+                    "failing_not_done_ids": ids([r for r in rows if not is_not_done(r.get("WF_Extraction_Complete"))]),
+                    "failing_dedupe_original_ids": ids([r for r in rows if not is_original(r.get("dedupe_status"))]),
+                }
+            }
+        except Exception as e:
+            logger.error(f"Error building availability report: {e}")
+            return {"success": False, "error": str(e)}
 
     async def assign_task(self, task_id: str, scraper_id: str) -> bool:
         """

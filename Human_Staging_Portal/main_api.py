@@ -489,6 +489,7 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
         # Require authentication
         user = require_auth(request)
         scraper_id = user["email"]  # Use email as scraper_id
+        user_email = user["email"]
         
         # Get a batch of available tasks then filter out recently served
         tasks = await db.get_available_tasks(limit=50)
@@ -552,6 +553,9 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
                 message="Task assignment failed - may have been taken by another scraper"
             )
             
+    except HTTPException as he:
+        # Propagate intended HTTP errors (e.g., 404 when no tasks)
+        raise he
     except Exception as e:
         logger.error(f"Error getting next task: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -570,6 +574,18 @@ async def get_available_tasks(limit: int = 10, db: DatabaseConnector = Depends(g
         }
     except Exception as e:
         logger.error(f"Error getting available tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/tasks/availability_report", response_model=Dict[str, Any])
+async def availability_report(db: DatabaseConnector = Depends(get_db)):
+    """Diagnostics endpoint to understand why no tasks are available."""
+    try:
+        if not hasattr(db, "availability_report"):
+            return {"success": False, "error": "availability_report not supported in current DB mode"}
+        report = await db.availability_report()
+        return report
+    except Exception as e:
+        logger.error(f"Error generating availability report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/recent", response_model=Dict[str, Any])
