@@ -240,7 +240,12 @@ class DatabaseConnector:
                 logger.info(
                     f"Applied prioritization after server filters. Eligible fetched: {len(rows)}; returning top {limit}"
                 )
-                return filtered_sorted[:limit]
+                
+                # Add randomization to prevent race conditions when multiple users request simultaneously
+                import random
+                result = filtered_sorted[:limit]
+                random.shuffle(result)  # Randomize order within the same priority level
+                return result
             else:
                 logger.info("No available tasks found after filtering")
                 return []
@@ -338,23 +343,65 @@ class DatabaseConnector:
         try:
             from datetime import datetime, timezone
             
+            claim_timestamp = datetime.now(timezone.utc).isoformat()
+            
             # Atomic update: claim the task only if it's still available
             response = (
                 self.client
                 .table(self.staging_table)
-                .update({"wf_timestamp_claimed_at": datetime.now(timezone.utc).isoformat()})
+                .update({"wf_timestamp_claimed_at": claim_timestamp})
                 .eq("id", task_id)
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
-                .is_("WF_Extraction_Complete", "null")   # Only if incomplete
+                .neq("WF_Extraction_Complete", True)  # Exclude only completed tasks (TRUE)
                 .execute()
             )
             
-            # If we get here without exception, the update succeeded
-            # The database is clean (confirmed with reset), so assume success
-            logger.info(f"Task {task_id} successfully claimed by scraper {scraper_id}")
-            return True
+            # Verify the claim actually worked by checking if the record was updated
+            # Query the task to see if our timestamp is now set
+            verify_response = (
+                self.client
+                .table(self.staging_table)
+                .select("wf_timestamp_claimed_at")
+                .eq("id", task_id)
+                .single()
+                .execute()
+            )
+            
+            current_timestamp = verify_response.data.get("wf_timestamp_claimed_at") if verify_response.data else None
+            logger.info(f"Verification for task {task_id}: expected={claim_timestamp}, actual={current_timestamp}")
+            
+            # Check if the task was successfully claimed by verifying timestamp is set and recent
+            if (verify_response.data and current_timestamp is not None):
+                # Parse both timestamps to compare them properly
+                from datetime import datetime, timezone
+                try:
+                    # Parse the timestamp from the database
+                    if isinstance(current_timestamp, str):
+                        db_time = datetime.fromisoformat(current_timestamp.replace('Z', '+00:00'))
+                    else:
+                        db_time = current_timestamp
+                    
+                    # Parse our expected timestamp
+                    our_time = datetime.fromisoformat(claim_timestamp.replace('Z', '+00:00'))
+                    
+                    # Check if timestamps are within 5 seconds (allowing for minor differences)
+                    time_diff = abs((db_time - our_time).total_seconds())
+                    if time_diff <= 5:
+                        logger.info(f"Task {task_id} successfully claimed by scraper {scraper_id} (time_diff: {time_diff}s)")
+                        return True
+                    else:
+                        logger.warning(f"Task {task_id} timestamp mismatch - time_diff: {time_diff}s")
+                        return False
+                except Exception as e:
+                    logger.error(f"Error parsing timestamps for task {task_id}: {e}")
+                    # Fallback: if we can't parse, but timestamp exists, assume success
+                    logger.info(f"Task {task_id} claimed (timestamp exists, fallback success)")
+                    return True
+            else:
+                logger.warning(f"Task {task_id} could not be claimed - verification failed (expected: {claim_timestamp}, got: {current_timestamp})")
+                return False
                 
         except Exception as e:
             logger.error(f"Error claiming task {task_id}: {e}")
