@@ -207,17 +207,32 @@ class DatabaseConnector:
                     except Exception:
                         return 0.0
 
+                def is_fast_lane(row: Dict[str, Any]) -> bool:
+                    """Check if article qualifies for fast lane priority"""
+                    clients_val = row.get("clients")
+                    if not clients_val:
+                        return False
+                    
+                    clients_text = str(clients_val).lower()
+                    fast_lane_keywords = ["databricks", "starface", "bombas", "wip", "kfc"]
+                    
+                    return any(keyword in clients_text for keyword in fast_lane_keywords)
+
                 def priority_key(row: Dict[str, Any]):
                     created = created_ts(row)
                     cp = row.get("client_priority") or 0
-                    if has_clients(row):
+                    
+                    # Fast lane gets highest priority (0)
+                    if is_fast_lane(row):
                         return (0, -created, 0)
+                    elif has_clients(row):
+                        return (1, -created, 0)
                     elif cp > 0:
-                        return (1, -int(cp), -created)
+                        return (2, -int(cp), -created)
                     elif has_focus_industry(row):
-                        return (2, -created, 0)
-                    else:
                         return (3, -created, 0)
+                    else:
+                        return (4, -created, 0)
 
                 filtered_sorted = sorted(filtered, key=priority_key)
                 logger.info(
