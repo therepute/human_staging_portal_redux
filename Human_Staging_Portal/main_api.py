@@ -504,17 +504,21 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
         if not filtered:
             return TaskResponse(success=False, message="No tasks available at this time")
 
-        task = filtered[0]
-        task_id = task["id"]
+        # Try to assign tasks in order until one succeeds (atomic claiming)
+        assigned_task = None
+        for task in filtered:
+            task_id = task["id"]
+            assigned = await db.assign_task(task_id, scraper_id)
+            if assigned:
+                assigned_task = task
+                break
         
-        # Try to assign the task
-        assigned = await db.assign_task(task_id, scraper_id)
-        
-        if assigned:
+        if assigned_task:
             # Add assignment metadata
             served_timestamp = datetime.now(timezone.utc).isoformat()
-            task["assigned_at"] = served_timestamp
-            task["scraper_id"] = scraper_id
+            assigned_task["assigned_at"] = served_timestamp
+            assigned_task["scraper_id"] = scraper_id
+            task_id = assigned_task["id"]
             
             # Store workflow status = 1 (opened in window) in soup_dedupe table
             try:
@@ -528,11 +532,11 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
             # Attach subscription credentials if available
             try:
                 # Use permalink domain first; fallback to publication name
-                cred = _find_credentials_for_article(task.get("permalink_url"), task.get("publication"))
-                if not cred and task.get("source_url"):
-                    cred = _find_credentials_for_article(task.get("source_url"), task.get("publication"))
+                cred = _find_credentials_for_article(assigned_task.get("permalink_url"), assigned_task.get("publication"))
+                if not cred and assigned_task.get("source_url"):
+                    cred = _find_credentials_for_article(assigned_task.get("source_url"), assigned_task.get("publication"))
                 if cred:
-                    task["credentials"] = {
+                    assigned_task["credentials"] = {
                         "name": cred.get("name"),
                         "domain": cred.get("domain"),
                         "email": cred.get("email"),
@@ -544,7 +548,7 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
             
             return TaskResponse(
                 success=True,
-                task=task,
+                task=assigned_task,
                 message=f"Task {task_id} assigned successfully"
             )
         else:
@@ -852,6 +856,42 @@ async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector
         }
     except Exception as e:
         logger.error(f"Error releasing expired tasks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/maintenance/expired-tasks", response_model=Dict[str, Any])
+async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):
+    """Check how many tasks are currently expired without releasing them"""
+    try:
+        from datetime import datetime, timezone, timedelta
+        
+        # Calculate cutoff time
+        cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+        cutoff_iso = cutoff_time.isoformat()
+        
+        # Count expired tasks
+        count_response = (
+            db.client
+            .table(db.staging_table)
+            .select("id", count="exact")
+            .eq("extraction_path", 2)
+            .eq("dedupe_status", "original")
+            .is_("WF_Extraction_Complete", "null")
+            .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
+            .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
+            .execute()
+        )
+        
+        expired_count = count_response.count or 0
+        
+        return {
+            "success": True,
+            "expired_count": expired_count,
+            "timeout_minutes": timeout_minutes,
+            "cutoff_time": cutoff_iso,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error checking expired tasks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Background task to periodically release expired tasks

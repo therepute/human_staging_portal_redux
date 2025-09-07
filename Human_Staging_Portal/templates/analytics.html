@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Soup Dedupe Processing Overview - Human Staging Portal</title>
+    <link rel="stylesheet" href="/static/css/portal.css">
+    <link rel="stylesheet" href="/static/css/brand_styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/date-fns@2.29.3/index.min.js"></script>
+    <style>
+        /* Brand Color Palette */
+        :root {
+            /* Core Brand Colors */
+            --emphasis-dark-orange: #fc5f36;
+            --text-dark-blue: #1c2d50;
+            --accent-light-blue: #baccd8;
+            --warm-support-light-orange: #fda790;
+            
+            /* UI & Structure Colors */
+            --border-medium-gray: #808080;
+            --border-dark-gray: #A9A9A9;
+            
+            /* Harmonious Complementary Colors */
+            --chart-accent-deep-navy: #2C3E50;
+            --warm-accent-dusty-rose: #D2A3A9;
+            --warning-warm-yellow: #F4D03F;
+            --error-soft-coral: #C85450;
+            --success-sage-green: #7FB069;
+            --neutral-bridge-warm-beige: #E8D5B7;
+            --soft-accent-fern: #A3C9A8;
+            --soft-accent-lavender: #C8B5D1;
+            --soft-accent-cream: #F5E6A8;
+            --cool-accent-soft-pink: #E6C2B8;
+        }
+
+        .analytics-container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: linear-gradient(135deg, var(--text-dark-blue) 0%, var(--chart-accent-deep-navy) 100%);
+            min-height: 100vh;
+            color: white;
+        }
+
+        .analytics-header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .analytics-header h1 {
+            color: white;
+            margin: 0 0 10px 0;
+            font-size: 2.2rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .analytics-header p {
+            color: var(--accent-light-blue);
+            margin: 0;
+            font-size: 1.1rem;
+        }
+
+        .controls-section {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .date-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .date-controls label {
+            color: white;
+            font-weight: 600;
+            font-size: 1rem;
+        }
+
+        .date-controls input[type="date"] {
+            padding: 8px 12px;
+            border: 2px solid var(--border-medium-gray);
+            border-radius: 6px;
+            background: rgba(255, 255, 255, 0.9);
+            color: var(--text-dark-blue);
+            font-size: 1rem;
+        }
+
+        .date-controls button {
+            background: var(--emphasis-dark-orange);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 1rem;
+            font-weight: 600;
+            transition: all 0.3s ease;
+        }
+
+        .date-controls button:hover {
+            background: var(--warm-support-light-orange);
+            transform: translateY(-2px);
+        }
+
+        .chart-section {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+        }
+
+        .chart-container {
+            position: relative;
+            height: 500px;
+            width: 100%;
+        }
+
+        .legend-section {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 20px;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 3px;
+        }
+
+        .legend-label {
+            color: white;
+            font-weight: 500;
+            font-size: 0.95rem;
+        }
+
+        .stats-section {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--emphasis-dark-orange);
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: white;
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+
+        .nav-links {
+            text-align: center;
+            margin-top: 30px;
+        }
+
+        .nav-links a {
+            color: var(--accent-light-blue);
+            text-decoration: none;
+            margin: 0 15px;
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            transition: all 0.3s ease;
+        }
+
+        .nav-links a:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: var(--accent-light-blue);
+            font-size: 1.1rem;
+        }
+
+        .error-message {
+            background: var(--error-soft-coral);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: center;
+        }
+
+        @media (max-width: 768px) {
+            .analytics-container {
+                padding: 10px;
+            }
+            
+            .date-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .chart-container {
+                height: 400px;
+            }
+            
+            .legend-section {
+                gap: 15px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="analytics-container">
+        <div class="analytics-header">
+            <h1>Soup Dedupe Processing Overview</h1>
+            <p>Processing analytics by source type after precheck completion</p>
+        </div>
+
+        <div class="controls-section">
+            <div class="date-controls">
+                <label for="start-date">Start Date:</label>
+                <input type="date" id="start-date" />
+                
+                <label for="end-date">End Date:</label>
+                <input type="date" id="end-date" />
+                
+                <button onclick="updateChart()">Update Chart</button>
+                <button onclick="setDefaultDates()">Last 30 Days</button>
+            </div>
+        </div>
+
+        <div class="stats-section" id="stats-section">
+            <!-- Stats will be populated by JavaScript -->
+        </div>
+
+        <div class="chart-section">
+            <div class="chart-container">
+                <canvas id="processingChart"></canvas>
+            </div>
+            <div class="legend-section">
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: var(--emphasis-dark-orange);"></div>
+                    <div class="legend-label">RSS</div>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: var(--success-sage-green);"></div>
+                    <div class="legend-label">Google Alert</div>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-color" style="background-color: var(--accent-light-blue);"></div>
+                    <div class="legend-label">Muck Rack Alert</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="nav-links">
+            <a href="/">← Back to Portal</a>
+            <a href="/admin">Admin Panel</a>
+        </div>
+    </div>
+
+    <script>
+        let chart = null;
+        let chartData = [];
+
+        // Set default dates (last 30 days)
+        function setDefaultDates() {
+            const today = new Date();
+            const thirtyDaysAgo = new Date(today);
+            thirtyDaysAgo.setDate(today.getDate() - 30);
+            
+            document.getElementById('end-date').value = today.toISOString().split('T')[0];
+            document.getElementById('start-date').value = thirtyDaysAgo.toISOString().split('T')[0];
+        }
+
+        // Initialize dates on page load
+        setDefaultDates();
+
+        // Fetch and update chart data
+        async function updateChart() {
+            const startDate = document.getElementById('start-date').value;
+            const endDate = document.getElementById('end-date').value;
+            
+            if (!startDate || !endDate) {
+                alert('Please select both start and end dates');
+                return;
+            }
+
+            try {
+                showLoading();
+                
+                const response = await fetch(`/api/analytics/processing?start_date=${startDate}&end_date=${endDate}`);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    chartData = result.data;
+                    renderChart();
+                    updateStats(result);
+                } else {
+                    throw new Error('Failed to fetch analytics data');
+                }
+                
+            } catch (error) {
+                console.error('Error fetching analytics:', error);
+                showError('Failed to load analytics data: ' + error.message);
+            }
+        }
+
+        function showLoading() {
+            const chartContainer = document.querySelector('.chart-container');
+            chartContainer.innerHTML = '<div class="loading">Loading analytics data...</div>';
+        }
+
+        function showError(message) {
+            const chartContainer = document.querySelector('.chart-container');
+            chartContainer.innerHTML = `<div class="error-message">${message}</div>`;
+        }
+
+        function renderChart() {
+            const ctx = document.getElementById('processingChart');
+            
+            if (chart) {
+                chart.destroy();
+            }
+
+            // Prepare chart data
+            const labels = chartData.map(item => {
+                const date = new Date(item.date);
+                return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+            });
+
+            const rssData = chartData.map(item => item.rss);
+            const googleAlertData = chartData.map(item => item.google_alert);
+            const muckRackData = chartData.map(item => item.muck_rack);
+
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: 'RSS',
+                            data: rssData,
+                            backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--emphasis-dark-orange'),
+                            borderColor: getComputedStyle(document.documentElement).getPropertyValue('--emphasis-dark-orange'),
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Google Alert',
+                            data: googleAlertData,
+                            backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--success-sage-green'),
+                            borderColor: getComputedStyle(document.documentElement).getPropertyValue('--success-sage-green'),
+                            borderWidth: 1
+                        },
+                        {
+                            label: 'Muck Rack Alert',
+                            data: muckRackData,
+                            backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--accent-light-blue'),
+                            borderColor: getComputedStyle(document.documentElement).getPropertyValue('--accent-light-blue'),
+                            borderWidth: 1
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        title: {
+                            display: true,
+                            text: 'Daily Processing Volume by Source Type',
+                            font: {
+                                size: 16,
+                                weight: 'bold'
+                            },
+                            color: getComputedStyle(document.documentElement).getPropertyValue('--text-dark-blue')
+                        },
+                        legend: {
+                            display: false // We have custom legend
+                        }
+                    },
+                    scales: {
+                        x: {
+                            stacked: true,
+                            title: {
+                                display: true,
+                                text: 'Date',
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-dark-blue'),
+                                font: {
+                                    weight: 'bold'
+                                }
+                            },
+                            ticks: {
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-dark-blue')
+                            }
+                        },
+                        y: {
+                            stacked: true,
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Number of Articles',
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-dark-blue'),
+                                font: {
+                                    weight: 'bold'
+                                }
+                            },
+                            ticks: {
+                                color: getComputedStyle(document.documentElement).getPropertyValue('--text-dark-blue'),
+                                precision: 0
+                            }
+                        }
+                    },
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    }
+                }
+            });
+        }
+
+        function updateStats(result) {
+            const totalRss = chartData.reduce((sum, item) => sum + item.rss, 0);
+            const totalGoogleAlert = chartData.reduce((sum, item) => sum + item.google_alert, 0);
+            const totalMuckRack = chartData.reduce((sum, item) => sum + item.muck_rack, 0);
+            const totalRecords = result.total_records;
+
+            const statsHtml = `
+                <div class="stat-card">
+                    <div class="stat-value">${totalRecords}</div>
+                    <div class="stat-label">Total Articles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${totalRss}</div>
+                    <div class="stat-label">RSS Articles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${totalGoogleAlert}</div>
+                    <div class="stat-label">Google Alert Articles</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">${totalMuckRack}</div>
+                    <div class="stat-label">Muck Rack Articles</div>
+                </div>
+            `;
+
+            document.getElementById('stats-section').innerHTML = statsHtml;
+        }
+
+        // Load initial chart on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            updateChart();
+        });
+    </script>
+</body>
+</html>
+

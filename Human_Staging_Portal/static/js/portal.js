@@ -81,7 +81,9 @@ async function getNextArticle() {
     try {
         updateStatus('Loading article...');
         
-        const response = await fetch(`${API_BASE}/tasks/next`);
+        const response = await fetch(`${API_BASE}/tasks/next`, {
+            credentials: 'include'  // Include cookies for authentication
+        });
         
         if (response.status === 404) {
             updateStatus('No articles available');
@@ -670,6 +672,7 @@ async function submitExtraction() {
             headers: {
                 'Content-Type': 'application/json'
             },
+            credentials: 'include',  // Include cookies for authentication
             body: JSON.stringify(extractionData)
         });
         
@@ -842,6 +845,7 @@ async function confirmUnable() {
             headers: {
                 'Content-Type': 'application/json'
             },
+            credentials: 'include',  // Include cookies for authentication
             body: JSON.stringify({
                 task_id: currentArticle.id,
                 scraper_id: 'human_portal_user',  // Identifies this as coming from the portal pipeline
@@ -1066,7 +1070,9 @@ function setupRecentSidebar() {
         list.innerHTML = '';
         loading.style.display = 'block';
         try {
-            const res = await fetch(`${API_BASE}/recent`);
+            const res = await fetch(`${API_BASE}/recent`, {
+                credentials: 'include'  // Include cookies for authentication
+            });
             const data = await res.json();
             loading.style.display = 'none';
             if (!data.success || !Array.isArray(data.items) || data.items.length === 0) {
@@ -1100,7 +1106,9 @@ function setupRecentSidebar() {
         const taskId = e.target.getAttribute('data-review-id');
         try {
             // Use query-param endpoint to allow IDs containing slashes
-            const res = await fetch(`${API_BASE}/task?task_id=${encodeURIComponent(taskId)}`);
+            const res = await fetch(`${API_BASE}/task?task_id=${encodeURIComponent(taskId)}`, {
+                credentials: 'include'  // Include cookies for authentication
+            });
             const data = await res.json();
             if (data && data.success && data.task) {
                 // Load into standard view for now (simple review mode)

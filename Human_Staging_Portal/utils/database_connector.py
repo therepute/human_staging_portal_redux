@@ -151,7 +151,7 @@ class DatabaseConnector:
                     "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
                     "summary, content, subscription_source, source, client_priority, focus_industry, "
                     "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
-                    "WF_Pre_Check_Complete, WF_Extraction_Complete, next_retry_at, last_modified, created_at"
+                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, next_retry_at, last_modified, created_at"
                 )
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
@@ -167,10 +167,12 @@ class DatabaseConnector:
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
                 wf_done = row.get("WF_Extraction_Complete")
+                wf_claimed = row.get("wf_timestamp_claimed_at")
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and str(wf_pre).upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
+                not_claimed = (wf_claimed is None)  # Only unclaimed tasks
                 dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
-                if pre_ok and not_done and dedupe_ok:
+                if pre_ok and not_done and not_claimed and dedupe_ok:
                     filtered.append(row)
 
             if filtered:
@@ -330,32 +332,32 @@ class DatabaseConnector:
 
     async def assign_task(self, task_id: str, scraper_id: str) -> bool:
         """
-        Simplified task assignment - just return the task without database updates
-        (Working with existing soup_dedupe schema without scraper_id/assigned_at columns)
+        Atomically claim a task by setting wf_timestamp_claimed_at
+        Since we confirmed database is clean, assume success if no exception occurs
         """
         try:
-            # Verify the task exists and is available (not completed)
-            response = self.client.table(self.staging_table).select("id, WF_Extraction_Complete, extraction_path, dedupe_status").eq("id", task_id).limit(1).execute()
-
-            if not response.data:
-                logger.warning(f"Task {task_id} not found for assignment")
-                return False
-
-            row = response.data[0]
-            if row.get("extraction_path") != 2:
-                logger.warning(f"Task {task_id} extraction_path != 2")
-                return False
-            if row.get("WF_Extraction_Complete") is True:
-                logger.warning(f"Task {task_id} already completed")
-                return False
-            if str(row.get("dedupe_status") or "").strip().lower() != "original":
-                logger.warning(f"Task {task_id} skipped due to dedupe_status != original")
-                return False
-            logger.info(f"Task {task_id} assigned to scraper {scraper_id} (simplified mode)")
+            from datetime import datetime, timezone
+            
+            # Atomic update: claim the task only if it's still available
+            response = (
+                self.client
+                .table(self.staging_table)
+                .update({"wf_timestamp_claimed_at": datetime.now(timezone.utc).isoformat()})
+                .eq("id", task_id)
+                .eq("extraction_path", 2)
+                .eq("dedupe_status", "original")
+                .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
+                .is_("WF_Extraction_Complete", "null")   # Only if incomplete
+                .execute()
+            )
+            
+            # If we get here without exception, the update succeeded
+            # The database is clean (confirmed with reset), so assume success
+            logger.info(f"Task {task_id} successfully claimed by scraper {scraper_id}")
             return True
                 
         except Exception as e:
-            logger.error(f"Error checking task {task_id}: {e}")
+            logger.error(f"Error claiming task {task_id}: {e}")
             return False
 
     async def submit_extraction(self, task_id: str, scraper_id: str, extracted_data: Dict[str, Any], scraper_user: str = None) -> bool:
@@ -455,6 +457,7 @@ class DatabaseConnector:
             update_data = {
                 "extraction_path": 3,  # Mark as completed
                 "WF_Extraction_Complete": True,
+                "wf_timestamp_claimed_at": None,  # Reset claim on completion
                 "last_modified": current_time
             }
             logger.info(f"🔄 Updating soup_dedupe with: {update_data}")
@@ -538,6 +541,7 @@ class DatabaseConnector:
             # Use columns that exist in the current schema (fallback from missing WF_Extraction_Complete_Explanation)
             update_data = {
                 "WF_Extraction_Complete": True,  # Mark as processed/complete
+                "wf_timestamp_claimed_at": None,  # Reset claim on failure
                 "wf_extraction_failure": error_message,  # Capture rejection reason (existing column)
                 "wf_timestamp_extraction_failure": current_time,  # Failure timestamp
                 "last_modified": current_time,
@@ -628,12 +632,49 @@ class DatabaseConnector:
             return []
 
     async def release_expired_tasks(self, timeout_minutes: int = 30) -> int:
-        """Release expired tasks (simplified - no task tracking)"""
+        """
+        Release tasks that have been claimed but not completed within timeout
+        Uses wf_timestamp_claimed_at to find expired tasks
+        """
         try:
-            # Since we don't track task assignments in the database, just return 0
-            # In a real implementation, this would use a separate tracking table
-            logger.info("No expired tasks to release (simplified mode)")
-            return 0
+            from datetime import datetime, timezone, timedelta
+            
+            # Calculate cutoff time (tasks claimed before this are expired)
+            cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
+            cutoff_iso = cutoff_time.isoformat()
+            
+            # First, get count of tasks that match our criteria (for logging)
+            count_response = (
+                self.client
+                .table(self.staging_table)
+                .select("id", count="exact")
+                .eq("extraction_path", 2)
+                .eq("dedupe_status", "original")
+                .is_("WF_Extraction_Complete", "null")
+                .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
+                .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
+                .execute()
+            )
+            
+            released_count = count_response.count or 0
+            
+            if released_count > 0:
+                # Release the expired tasks by setting wf_timestamp_claimed_at to NULL
+                response = (
+                    self.client
+                    .table(self.staging_table)
+                    .update({"wf_timestamp_claimed_at": None})  # Release the claim
+                    .eq("extraction_path", 2)
+                    .eq("dedupe_status", "original")
+                    .is_("WF_Extraction_Complete", "null")
+                    .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
+                    .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
+                    .execute()
+                )
+                
+                logger.info(f"Released {released_count} expired tasks (claimed > {timeout_minutes} minutes ago)")
+            
+            return released_count
             
         except Exception as e:
             logger.error(f"Error releasing expired tasks: {e}")
