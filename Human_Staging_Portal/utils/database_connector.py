@@ -440,6 +440,8 @@ class DatabaseConnector:
                 "Search": original_article.get("subscription_source"),  # Direct carryover ✅
                 "Source": original_article.get("source"),  # Direct carryover from 'source' field ✅
                 "client_priority": original_article.get("client_priority"),  # Direct carryover ✅
+                "clients": original_article.get("clients"),  # Direct carryover ✅ - Fast Lane keywords
+                "focus_industry": original_article.get("focus_industry"),  # Direct carryover ✅ - Industry prioritization
                 "subscription": original_article.get("subscription"),  # Direct carryover ✅
                 # "pub_tier": original_article.get("pub_tier"),  # REMOVED: Column doesn't exist in the_soups table
                 "soup_dedupe_id": task_id,  # Links back to soup_dedupe.id ✅
