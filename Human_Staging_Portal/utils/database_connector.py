@@ -141,6 +141,7 @@ class DatabaseConnector:
         """
         Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete is True
         Handles both boolean True and string "TRUE" values for WF_Pre_Check_Complete
+        Requires 15-minute delay after WF_TIMESTAMP_Pre_Check_Complete to prevent dedupe conflicts
         """
         try:
             # Apply server-side filters to unlock the full eligible set efficiently
@@ -151,7 +152,7 @@ class DatabaseConnector:
                     "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
                     "summary, content, subscription_source, source, client_priority, focus_industry, "
                     "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
-                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, next_retry_at, last_modified, created_at"
+                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, WF_TIMESTAMP_Pre_Check_Complete, next_retry_at, last_modified, created_at"
                 )
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
@@ -164,15 +165,30 @@ class DatabaseConnector:
 
             # Safety net: keep a light post-filter in case of unexpected values
             filtered: List[Dict[str, Any]] = []
+            now = datetime.now(timezone.utc)
+            
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
                 wf_done = row.get("WF_Extraction_Complete")
                 wf_claimed = row.get("wf_timestamp_claimed_at")
+                wf_pre_ts = row.get("WF_TIMESTAMP_Pre_Check_Complete")
+                
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and str(wf_pre).upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
                 not_claimed = (wf_claimed is None)  # Only unclaimed tasks
                 dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
-                if pre_ok and not_done and not_claimed and dedupe_ok:
+                
+                # Check 15-minute delay after pre-check completion
+                pre_check_aged = True  # Default to True if no timestamp
+                if wf_pre_ts:
+                    try:
+                        pre_check_time = datetime.fromisoformat(wf_pre_ts.replace('Z', '+00:00'))
+                        pre_check_aged = (now - pre_check_time).total_seconds() >= 900  # 15 minutes = 900 seconds
+                    except Exception:
+                        # If timestamp parsing fails, default to allowing the article
+                        pre_check_aged = True
+                
+                if pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged:
                     filtered.append(row)
 
             if filtered:
