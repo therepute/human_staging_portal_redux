@@ -1,2 +1,2 @@
 [start]
-cmd = "python run_server.py"
+cmd = "cd /app && python run_server.py"

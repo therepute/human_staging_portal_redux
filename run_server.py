@@ -8,11 +8,20 @@ import os
 import sys
 import uvicorn
 
+print("🔍 DEBUG: Starting run_server.py")
+print(f"🔍 DEBUG: Current working directory: {os.getcwd()}")
+print(f"🔍 DEBUG: Python path: {sys.path}")
+print(f"🔍 DEBUG: Files in current directory: {os.listdir('.')}")
+
 # Add current directory to Python path
 sys.path.insert(0, '.')
 
+print("🔍 DEBUG: About to import Human_Staging_Portal.main_api")
+
 # Import the FastAPI app
 from Human_Staging_Portal.main_api import app
+
+print("🔍 DEBUG: Successfully imported app!")
 
 if __name__ == "__main__":
     # Get port from Railway environment

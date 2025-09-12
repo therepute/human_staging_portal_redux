@@ -1,2 +1,2 @@
-web: python run_server.py
+web: cd /app && python run_server.py
 
