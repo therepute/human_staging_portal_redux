@@ -139,8 +139,8 @@ class DatabaseConnector:
 
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete is True
-        Handles both boolean True and string "TRUE" values for WF_Pre_Check_Complete
+        Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete=True
+        Server-side filters ensure only eligible articles are fetched
         Requires 15-minute delay after WF_TIMESTAMP_Pre_Check_Complete to prevent dedupe conflicts
         """
         try:
@@ -156,6 +156,7 @@ class DatabaseConnector:
                 )
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
+                .eq("WF_Pre_Check_Complete", True)
                 .order("created_at", desc=True)
                 .limit(1000)
                 .execute()
