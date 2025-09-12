@@ -823,6 +823,16 @@ async def admin_pending_groupings(db: DatabaseConnector = Depends(get_db)):
         logger.error(f"Admin pending_groupings error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/admin/served_metrics", response_model=Dict[str, Any])
+async def admin_served_metrics(db: DatabaseConnector = Depends(get_db)):
+    """Get Articles Served and Duplicates Served metrics for last 24h and 3h"""
+    try:
+        data = await db.metrics_served_articles()
+        return {"success": True, **data}
+    except Exception as e:
+        logger.error(f"Admin served_metrics error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})

@@ -860,6 +860,97 @@ class DatabaseConnector:
             logger.error(f"metrics_pending_groupings error: {e}")
             return {"by_clients": [], "by_focus_industry": []}
 
+    async def metrics_served_articles(self) -> Dict[str, Any]:
+        """
+        Get Articles Served and Duplicates Served metrics for last 24h and 3h
+        
+        Articles Served: scraper_user has a value (not null)
+        Duplicates Served: WF_Routing_Verified = True AND WF_Pre_Check_Complete = False AND scraper_user has a value
+        """
+        try:
+            from datetime import datetime, timezone, timedelta
+            
+            now = datetime.now(timezone.utc)
+            cutoff_24h = now - timedelta(hours=24)
+            cutoff_3h = now - timedelta(hours=3)
+            
+            # Query soup_dedupe for served articles (scraper_user is not null)
+            # Get articles with timestamps in the last 24 hours
+            response = (
+                self.client
+                .table(self.staging_table)
+                .select("id, scraper_user, WF_Routing_Verified, WF_Pre_Check_Complete, WF_TIMESTAMP_served_human_scrape, created_at")
+                .not_.is_("scraper_user", "null")  # Articles served (scraper_user has value)
+                .gte("WF_TIMESTAMP_served_human_scrape", cutoff_24h.isoformat())  # Last 24 hours
+                .execute()
+            )
+            
+            rows = response.data or []
+            
+            # Count articles served
+            articles_24h = 0
+            articles_3h = 0
+            
+            # Count duplicates served
+            duplicates_24h = 0
+            duplicates_3h = 0
+            
+            for row in rows:
+                served_timestamp = row.get("WF_TIMESTAMP_served_human_scrape")
+                if not served_timestamp:
+                    continue
+                    
+                try:
+                    served_dt = datetime.fromisoformat(served_timestamp.replace('Z', '+00:00'))
+                except Exception:
+                    continue
+                
+                # Count articles served
+                if served_dt >= cutoff_24h:
+                    articles_24h += 1
+                if served_dt >= cutoff_3h:
+                    articles_3h += 1
+                
+                # Check if it's a duplicate (WF_Routing_Verified=True AND WF_Pre_Check_Complete=False)
+                is_duplicate = (
+                    row.get("WF_Routing_Verified") is True and 
+                    row.get("WF_Pre_Check_Complete") is False
+                )
+                
+                if is_duplicate:
+                    if served_dt >= cutoff_24h:
+                        duplicates_24h += 1
+                    if served_dt >= cutoff_3h:
+                        duplicates_3h += 1
+            
+            return {
+                "articles_served": {
+                    "last_24_hours": articles_24h,
+                    "last_3_hours": articles_3h
+                },
+                "duplicates_served": {
+                    "last_24_hours": duplicates_24h,
+                    "last_3_hours": duplicates_3h
+                },
+                "timestamp": now.isoformat(),
+                "cutoff_24h": cutoff_24h.isoformat(),
+                "cutoff_3h": cutoff_3h.isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting served metrics: {e}")
+            return {
+                "articles_served": {
+                    "last_24_hours": 0,
+                    "last_3_hours": 0
+                },
+                "duplicates_served": {
+                    "last_24_hours": 0,
+                    "last_3_hours": 0
+                },
+                "error": str(e)
+            }
+
     async def analyze_required_fields(self, task_id: str) -> Dict[str, Any]:
         """
         Smart field analysis: determine which fields need human input vs. pre-filled
