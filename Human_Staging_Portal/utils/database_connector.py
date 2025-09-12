@@ -283,6 +283,7 @@ class DatabaseConnector:
                     "id, title, WF_Pre_Check_Complete, WF_Extraction_Complete, dedupe_status, extraction_path, created_at"
                 )
                 .eq("extraction_path", 2)
+                .eq("WF_Pre_Check_Complete", True)
                 .order("created_at", desc=True)
                 .limit(limit_fetch)
                 .execute()
@@ -370,6 +371,7 @@ class DatabaseConnector:
                 .eq("id", task_id)
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
+                .eq("WF_Pre_Check_Complete", True)
                 .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
                 .neq("WF_Extraction_Complete", True)  # Exclude only completed tasks (TRUE)
                 .execute()
@@ -716,6 +718,7 @@ class DatabaseConnector:
                 .select("id", count="exact")
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
+                .eq("WF_Pre_Check_Complete", True)
                 .is_("WF_Extraction_Complete", "null")
                 .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                 .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -732,6 +735,7 @@ class DatabaseConnector:
                     .update({"wf_timestamp_claimed_at": None})  # Release the claim
                     .eq("extraction_path", 2)
                     .eq("dedupe_status", "original")
+                    .eq("WF_Pre_Check_Complete", True)
                     .is_("WF_Extraction_Complete", "null")
                     .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                     .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -823,7 +827,7 @@ class DatabaseConnector:
             # Fetch superset and filter like get_available_tasks
             resp = self.client.table(self.staging_table).select(
                 "id, clients, focus_industry, WF_Pre_Check_Complete, WF_Extraction_Complete, extraction_path, created_at, WF_TIMESTAMP_Pre_Check_Complete"
-            ).eq("extraction_path", 2).limit(4000).execute()
+            ).eq("extraction_path", 2).eq("WF_Pre_Check_Complete", True).limit(4000).execute()
             rows = resp.data or []
             filtered: List[Dict[str, Any]] = []
             for row in rows:
