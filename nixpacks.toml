@@ -1,2 +1,2 @@
-[start]
-cmd = "cd /app && python run_server.py"
+[phases.start]
+cmd = "python run_server.py"
