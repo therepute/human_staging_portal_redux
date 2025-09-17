@@ -152,11 +152,12 @@ class DatabaseConnector:
                     "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
                     "summary, content, subscription_source, source, client_priority, focus_industry, "
                     "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
-                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, WF_TIMESTAMP_Pre_Check_Complete, next_retry_at, last_modified, created_at"
+                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, WF_TIMESTAMP_Pre_Check_Complete, WF_Patch_Duplicate_Syndicate, next_retry_at, last_modified, created_at"
                 )
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
+                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
                 .order("created_at", desc=True)
                 .limit(1000)
                 .execute()
@@ -173,11 +174,13 @@ class DatabaseConnector:
                 wf_done = row.get("WF_Extraction_Complete")
                 wf_claimed = row.get("wf_timestamp_claimed_at")
                 wf_pre_ts = row.get("WF_TIMESTAMP_Pre_Check_Complete")
+                wf_patch_duplicate = row.get("WF_Patch_Duplicate_Syndicate")
                 
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and str(wf_pre).upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
                 not_claimed = (wf_claimed is None)  # Only unclaimed tasks
                 dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
+                not_suppressed = (wf_patch_duplicate != "suppressed")  # Exclude suppressed duplicates
                 
                 # Check 15-minute delay after pre-check completion
                 pre_check_aged = True  # Default to True if no timestamp
@@ -189,7 +192,7 @@ class DatabaseConnector:
                         # If timestamp parsing fails, default to allowing the article
                         pre_check_aged = True
                 
-                if pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged:
+                if pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged and not_suppressed:
                     filtered.append(row)
 
             if filtered:
@@ -284,6 +287,7 @@ class DatabaseConnector:
                 )
                 .eq("extraction_path", 2)
                 .eq("WF_Pre_Check_Complete", True)
+                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
                 .order("created_at", desc=True)
                 .limit(limit_fetch)
                 .execute()
@@ -372,6 +376,7 @@ class DatabaseConnector:
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
+                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
                 .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
                 .neq("WF_Extraction_Complete", True)  # Exclude only completed tasks (TRUE)
                 .execute()
@@ -719,6 +724,7 @@ class DatabaseConnector:
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
+                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
                 .is_("WF_Extraction_Complete", "null")
                 .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                 .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -736,6 +742,7 @@ class DatabaseConnector:
                     .eq("extraction_path", 2)
                     .eq("dedupe_status", "original")
                     .eq("WF_Pre_Check_Complete", True)
+                    .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
                     .is_("WF_Extraction_Complete", "null")
                     .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                     .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -826,16 +833,18 @@ class DatabaseConnector:
         try:
             # Fetch superset and filter like get_available_tasks
             resp = self.client.table(self.staging_table).select(
-                "id, clients, focus_industry, WF_Pre_Check_Complete, WF_Extraction_Complete, extraction_path, created_at, WF_TIMESTAMP_Pre_Check_Complete"
-            ).eq("extraction_path", 2).eq("WF_Pre_Check_Complete", True).limit(4000).execute()
+                "id, clients, focus_industry, WF_Pre_Check_Complete, WF_Extraction_Complete, extraction_path, created_at, WF_TIMESTAMP_Pre_Check_Complete, WF_Patch_Duplicate_Syndicate"
+            ).eq("extraction_path", 2).eq("WF_Pre_Check_Complete", True).neq("WF_Patch_Duplicate_Syndicate", "suppressed").limit(4000).execute()
             rows = resp.data or []
             filtered: List[Dict[str, Any]] = []
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
                 wf_done = row.get("WF_Extraction_Complete")
+                wf_patch_duplicate = row.get("WF_Patch_Duplicate_Syndicate")
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
-                if pre_ok and not_done:
+                not_suppressed = (wf_patch_duplicate != "suppressed")  # Exclude suppressed duplicates
+                if pre_ok and not_done and not_suppressed:
                     filtered.append(row)
             by_clients: Dict[str, int] = {}
             by_focus: Dict[str, int] = {}
