@@ -886,7 +886,7 @@ async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector =
             .eq("extraction_path", 2)
             .eq("dedupe_status", "original")
             .eq("WF_Pre_Check_Complete", True)
-            .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+            .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
             .is_("WF_Extraction_Complete", "null")
             .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
             .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff

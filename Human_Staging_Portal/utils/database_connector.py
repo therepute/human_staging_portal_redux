@@ -139,12 +139,12 @@ class DatabaseConnector:
 
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
-        Fetch articles from soup_dedupe where extraction_path=2 and WF_Pre_Check_Complete=True
-        Server-side filters ensure only eligible articles are fetched
-        Requires 15-minute delay after WF_TIMESTAMP_Pre_Check_Complete to prevent dedupe conflicts
+        NEW RESTRICTIVE LOGIC WITH AI FALLBACK:
+        1. Primary: Articles for specific clients (KFC/Databricks/Starface/WIP) + creator/unknown
+        2. Fallback: Articles with focus_industry = "AI" + creator/unknown
         """
         try:
-            # Apply server-side filters to unlock the full eligible set efficiently
+            # Apply server-side filters for new restrictive criteria
             response = (
                 self.client
                 .table(self.staging_table)
@@ -157,7 +157,7 @@ class DatabaseConnector:
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
-                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
                 .order("created_at", desc=True)
                 .limit(1000)
                 .execute()
@@ -165,9 +165,11 @@ class DatabaseConnector:
 
             rows: List[Dict[str, Any]] = response.data or []
 
-            # Safety net: keep a light post-filter in case of unexpected values
-            filtered: List[Dict[str, Any]] = []
+            # NEW TWO-TIER FILTERING: Primary (target clients) + Fallback (AI focus)
+            primary_pool: List[Dict[str, Any]] = []
+            fallback_pool: List[Dict[str, Any]] = []
             now = datetime.now(timezone.utc)
+            target_clients = ["KFC", "Databricks", "Starface", "WIP"]
             
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
@@ -175,12 +177,15 @@ class DatabaseConnector:
                 wf_claimed = row.get("wf_timestamp_claimed_at")
                 wf_pre_ts = row.get("WF_TIMESTAMP_Pre_Check_Complete")
                 wf_patch_duplicate = row.get("WF_Patch_Duplicate_Syndicate")
+                clients_val = row.get("clients")
+                focus_industry = row.get("focus_industry")
                 
+                # Basic eligibility checks
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and str(wf_pre).upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
                 not_claimed = (wf_claimed is None)  # Only unclaimed tasks
                 dedupe_ok = str(row.get("dedupe_status") or "").strip().lower() == "original"
-                not_suppressed = (wf_patch_duplicate != "suppressed")  # Exclude suppressed duplicates
+                valid_status = wf_patch_duplicate in ["creator", "unknown"]
                 
                 # Check 15-minute delay after pre-check completion
                 pre_check_aged = True  # Default to True if no timestamp
@@ -192,35 +197,45 @@ class DatabaseConnector:
                         # If timestamp parsing fails, default to allowing the article
                         pre_check_aged = True
                 
-                if pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged and not_suppressed:
-                    filtered.append(row)
+                # Only proceed if basic criteria are met
+                if not (pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged and valid_status):
+                    continue
+                
+                # PRIMARY POOL: Check if clients contains any target keywords (case insensitive)
+                has_target_client = False
+                if clients_val:
+                    clients_lower = str(clients_val).lower()
+                    has_target_client = any(keyword.lower() in clients_lower for keyword in target_clients)
+                
+                if has_target_client:
+                    primary_pool.append(row)
+                    continue
+                
+                # FALLBACK POOL: Check if focus_industry is "AI"
+                has_ai_focus = False
+                if focus_industry:
+                    if isinstance(focus_industry, list):
+                        has_ai_focus = "AI" in focus_industry
+                    else:
+                        has_ai_focus = str(focus_industry).strip() == "AI"
+                
+                if has_ai_focus:
+                    fallback_pool.append(row)
+            
+            # Use primary pool if available, otherwise fallback to AI pool
+            if primary_pool:
+                filtered = primary_pool
+                logger.info(f"Using PRIMARY pool: {len(primary_pool)} target client articles")
+            elif fallback_pool:
+                filtered = fallback_pool
+                logger.info(f"Using FALLBACK pool: {len(fallback_pool)} AI focus articles")
+            else:
+                filtered = []
+                logger.info("No articles available in either primary or fallback pools")
 
             if filtered:
-                # Requested prioritization:
-                # 1) clients present → created_at DESC (newer first)
-                # 2) client_priority > 0 → higher first, then created_at DESC
-                # 3) focus_industry present → created_at DESC
-                # 4) everything else → created_at DESC
-
-                def has_focus_industry(row: Dict[str, Any]) -> bool:
-                    fi = row.get("focus_industry")
-                    if fi is None:
-                        return False
-                    if isinstance(fi, list):
-                        return len(fi) > 0
-                    return str(fi).strip() != ""
-
-                def has_clients(row: Dict[str, Any]) -> bool:
-                    cv = row.get("clients")
-                    if cv is None:
-                        return False
-                    if isinstance(cv, list):
-                        return len(cv) > 0
-                    text = str(cv).strip()
-                    if not text:
-                        return False
-                    return text.lower() != "unspecified"
-
+                # NEW SIMPLIFIED LOGIC: All articles meet target client criteria, so just randomize
+                # Sort by created_at DESC first (newest first), then randomize to prevent race conditions
                 def created_ts(row: Dict[str, Any]) -> float:
                     ts = row.get("created_at") or ""
                     try:
@@ -229,45 +244,21 @@ class DatabaseConnector:
                     except Exception:
                         return 0.0
 
-                def is_fast_lane(row: Dict[str, Any]) -> bool:
-                    """Check if article qualifies for fast lane priority"""
-                    clients_val = row.get("clients")
-                    if not clients_val:
-                        return False
-                    
-                    clients_text = str(clients_val).lower()
-                    fast_lane_keywords = ["databricks", "starface", "bombas", "wip", "kfc"]
-                    
-                    return any(keyword in clients_text for keyword in fast_lane_keywords)
-
-                def priority_key(row: Dict[str, Any]):
-                    created = created_ts(row)
-                    cp = row.get("client_priority") or 0
-                    
-                    # Fast lane gets highest priority (0)
-                    if is_fast_lane(row):
-                        return (0, -created, 0)
-                    elif has_clients(row):
-                        return (1, -created, 0)
-                    elif cp > 0:
-                        return (2, -int(cp), -created)
-                    elif has_focus_industry(row):
-                        return (3, -created, 0)
-                    else:
-                        return (4, -created, 0)
-
-                filtered_sorted = sorted(filtered, key=priority_key)
+                # Sort newest first, then randomize
+                filtered_sorted = sorted(filtered, key=lambda row: -created_ts(row))
+                
+                pool_type = "PRIMARY (target clients)" if primary_pool else "FALLBACK (AI focus)"
                 logger.info(
-                    f"Applied prioritization after server filters. Eligible fetched: {len(rows)}; returning top {limit}"
+                    f"TWO-TIER LOGIC: {len(rows)} fetched, {len(filtered)} eligible from {pool_type} pool, returning top {limit}"
                 )
                 
-                # Add randomization to prevent race conditions when multiple users request simultaneously
+                # Randomize to prevent race conditions when multiple users request simultaneously
                 import random
                 result = filtered_sorted[:limit]
-                random.shuffle(result)  # Randomize order within the same priority level
+                random.shuffle(result)  # Randomize the final selection
                 return result
             else:
-                logger.info("No available tasks found after filtering")
+                logger.info("No available tasks found in either primary (target clients) or fallback (AI focus) pools")
                 return []
                 
         except Exception as e:
@@ -283,11 +274,11 @@ class DatabaseConnector:
                 self.client
                 .table(self.staging_table)
                 .select(
-                    "id, title, WF_Pre_Check_Complete, WF_Extraction_Complete, dedupe_status, extraction_path, created_at"
+                    "id, title, WF_Pre_Check_Complete, WF_Extraction_Complete, dedupe_status, extraction_path, created_at, clients, WF_Patch_Duplicate_Syndicate"
                 )
                 .eq("extraction_path", 2)
                 .eq("WF_Pre_Check_Complete", True)
-                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
                 .order("created_at", desc=True)
                 .limit(limit_fetch)
                 .execute()
@@ -367,7 +358,7 @@ class DatabaseConnector:
             
             claim_timestamp = datetime.now(timezone.utc).isoformat()
             
-            # Atomic update: claim the task only if it's still available
+            # Atomic update: claim the task only if it meets NEW RESTRICTIVE criteria
             response = (
                 self.client
                 .table(self.staging_table)
@@ -376,28 +367,53 @@ class DatabaseConnector:
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
-                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
                 .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
                 .neq("WF_Extraction_Complete", True)  # Exclude only completed tasks (TRUE)
                 .execute()
             )
             
             # Verify the claim actually worked by checking if the record was updated
-            # Query the task to see if our timestamp is now set
+            # Also verify the article still meets target client criteria
             verify_response = (
                 self.client
                 .table(self.staging_table)
-                .select("wf_timestamp_claimed_at")
+                .select("wf_timestamp_claimed_at, clients, WF_Patch_Duplicate_Syndicate, focus_industry")
                 .eq("id", task_id)
                 .single()
                 .execute()
             )
             
             current_timestamp = verify_response.data.get("wf_timestamp_claimed_at") if verify_response.data else None
-            logger.info(f"Verification for task {task_id}: expected={claim_timestamp}, actual={current_timestamp}")
+            clients_val = verify_response.data.get("clients") if verify_response.data else None
+            patch_status = verify_response.data.get("WF_Patch_Duplicate_Syndicate") if verify_response.data else None
+            focus_industry = verify_response.data.get("focus_industry") if verify_response.data else None
             
-            # Check if the task was successfully claimed by verifying timestamp is set and recent
-            if (verify_response.data and current_timestamp is not None):
+            # Verify article meets either PRIMARY (target clients) OR FALLBACK (AI focus) criteria
+            target_clients = ["KFC", "Databricks", "Starface", "WIP"]
+            
+            # Check PRIMARY: target clients
+            has_target_client = False
+            if clients_val:
+                clients_lower = str(clients_val).lower()
+                has_target_client = any(keyword.lower() in clients_lower for keyword in target_clients)
+            
+            # Check FALLBACK: AI focus
+            has_ai_focus = False
+            if focus_industry:
+                if isinstance(focus_industry, list):
+                    has_ai_focus = "AI" in focus_industry
+                else:
+                    has_ai_focus = str(focus_industry).strip() == "AI"
+            
+            # Article must meet either primary OR fallback criteria
+            meets_criteria = has_target_client or has_ai_focus
+            criteria_type = "PRIMARY (target clients)" if has_target_client else ("FALLBACK (AI focus)" if has_ai_focus else "NONE")
+            
+            logger.info(f"Verification for task {task_id}: expected={claim_timestamp}, actual={current_timestamp}, clients={clients_val}, focus={focus_industry}, criteria={criteria_type}, status={patch_status}")
+            
+            # Check if the task was successfully claimed by verifying timestamp is set and meets criteria
+            if (verify_response.data and current_timestamp is not None and meets_criteria and patch_status in ["creator", "unknown"]):
                 # Parse both timestamps to compare them properly
                 from datetime import datetime, timezone
                 try:
@@ -716,7 +732,7 @@ class DatabaseConnector:
             cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
             cutoff_iso = cutoff_time.isoformat()
             
-            # First, get count of tasks that match our criteria (for logging)
+            # First, get count of tasks that match our NEW RESTRICTIVE criteria (for logging)
             count_response = (
                 self.client
                 .table(self.staging_table)
@@ -724,7 +740,7 @@ class DatabaseConnector:
                 .eq("extraction_path", 2)
                 .eq("dedupe_status", "original")
                 .eq("WF_Pre_Check_Complete", True)
-                .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
                 .is_("WF_Extraction_Complete", "null")
                 .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                 .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -734,7 +750,7 @@ class DatabaseConnector:
             released_count = count_response.count or 0
             
             if released_count > 0:
-                # Release the expired tasks by setting wf_timestamp_claimed_at to NULL
+                # Release the expired tasks by setting wf_timestamp_claimed_at to NULL (NEW RESTRICTIVE criteria)
                 response = (
                     self.client
                     .table(self.staging_table)
@@ -742,7 +758,7 @@ class DatabaseConnector:
                     .eq("extraction_path", 2)
                     .eq("dedupe_status", "original")
                     .eq("WF_Pre_Check_Complete", True)
-                    .neq("WF_Patch_Duplicate_Syndicate", "suppressed")  # ✅ NEWLY ADDED - Exclude suppressed duplicates
+                    .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
                     .is_("WF_Extraction_Complete", "null")
                     .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
                     .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -831,20 +847,30 @@ class DatabaseConnector:
     async def metrics_pending_groupings(self) -> Dict[str, List[Dict[str, Any]]]:
         """Counts of pending (awaiting scrape) grouped by clients and focus_industry from soup_dedupe."""
         try:
-            # Fetch superset and filter like get_available_tasks
+            # Fetch superset with NEW RESTRICTIVE criteria
             resp = self.client.table(self.staging_table).select(
                 "id, clients, focus_industry, WF_Pre_Check_Complete, WF_Extraction_Complete, extraction_path, created_at, WF_TIMESTAMP_Pre_Check_Complete, WF_Patch_Duplicate_Syndicate"
-            ).eq("extraction_path", 2).eq("WF_Pre_Check_Complete", True).neq("WF_Patch_Duplicate_Syndicate", "suppressed").limit(4000).execute()
+            ).eq("extraction_path", 2).eq("WF_Pre_Check_Complete", True).in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"]).limit(4000).execute()
             rows = resp.data or []
             filtered: List[Dict[str, Any]] = []
+            target_clients = ["KFC", "Databricks", "Starface", "WIP"]
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
                 wf_done = row.get("WF_Extraction_Complete")
                 wf_patch_duplicate = row.get("WF_Patch_Duplicate_Syndicate")
+                clients_val = row.get("clients")
+                
                 pre_ok = (wf_pre is True) or (isinstance(wf_pre, str) and wf_pre.upper() == "TRUE")
                 not_done = (wf_done is None) or (wf_done is False)
-                not_suppressed = (wf_patch_duplicate != "suppressed")  # Exclude suppressed duplicates
-                if pre_ok and not_done and not_suppressed:
+                valid_status = wf_patch_duplicate in ["creator", "unknown"]
+                
+                # NEW: Check if clients contains any target keywords (case insensitive)
+                has_target_client = False
+                if clients_val:
+                    clients_lower = str(clients_val).lower()
+                    has_target_client = any(keyword.lower() in clients_lower for keyword in target_clients)
+                
+                if pre_ok and not_done and valid_status and has_target_client:
                     filtered.append(row)
             by_clients: Dict[str, int] = {}
             by_focus: Dict[str, int] = {}
