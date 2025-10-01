@@ -486,13 +486,19 @@ async def health_check(db: DatabaseConnector = Depends(get_db)):
 async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db)):
     """Get the next highest priority task for a scraper"""
     try:
+        import time
+        request_start = time.time()
+        
         # Require authentication
         user = require_auth(request)
         scraper_id = user["email"]  # Use email as scraper_id
         user_email = user["email"]
         
         # Get a batch of available tasks then filter out recently served
+        fetch_start = time.time()
         tasks = await db.get_available_tasks(limit=50)
+        fetch_elapsed = time.time() - fetch_start
+        logger.info(f"Fetched {len(tasks)} tasks in {fetch_elapsed:.2f}s")
         
         if not tasks:
             # Align with frontend expectation: return 404 when no tasks
@@ -505,13 +511,25 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
             return TaskResponse(success=False, message="No tasks available at this time")
 
         # Try to assign tasks in order until one succeeds (atomic claiming)
+        # Limit attempts to avoid long delays
         assigned_task = None
-        for task in filtered:
+        max_attempts = min(10, len(filtered))  # Try max 10 tasks
+        
+        assign_start = time.time()
+        attempts = 0
+        for i, task in enumerate(filtered[:max_attempts]):
             task_id = task["id"]
+            attempts += 1
             assigned = await db.assign_task(task_id, scraper_id)
             if assigned:
                 assigned_task = task
                 break
+            # If this isn't the first attempt and we failed, add small delay
+            if i > 0:
+                await asyncio.sleep(0.01)  # 10ms delay between retries
+        
+        assign_elapsed = time.time() - assign_start
+        logger.info(f"Task assignment: {'SUCCESS' if assigned_task else 'FAILED'} in {assign_elapsed:.2f}s ({attempts} attempts)")
         
         if assigned_task:
             # Add assignment metadata
@@ -546,12 +564,16 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
             except Exception as e:
                 logger.warning(f"Unable to attach credentials for task {task_id}: {e}")
             
+            total_elapsed = time.time() - request_start
+            logger.info(f"TOTAL REQUEST TIME: {total_elapsed:.2f}s (fetch: {fetch_elapsed:.2f}s, assign: {assign_elapsed:.2f}s)")
             return TaskResponse(
                 success=True,
                 task=assigned_task,
                 message=f"Task {task_id} assigned successfully"
             )
         else:
+            total_elapsed = time.time() - request_start
+            logger.warning(f"No tasks could be claimed after {total_elapsed:.2f}s")
             return TaskResponse(
                 success=False,
                 message="Task assignment failed - may have been taken by another scraper"
