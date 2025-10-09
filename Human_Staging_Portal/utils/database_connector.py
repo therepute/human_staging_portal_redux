@@ -215,8 +215,15 @@ class DatabaseConnector:
         2. Fallback: Articles with focus_industry = "AI" + creator/unknown/NULL
         """
         try:
+            import time
+            fetch_start = time.time()
+            
             # Use direct PostgreSQL connection for better control
+            conn_start = time.time()
             conn = self.get_db_connection()
+            conn_elapsed = time.time() - conn_start
+            logger.info(f"Got DB connection in {conn_elapsed:.2f}s")
+            
             cursor = conn.cursor(cursor_factory=RealDictCursor)
             
             # Optimized query - EXCLUDE large text columns (summary, content) for performance
@@ -238,15 +245,27 @@ class DatabaseConnector:
             LIMIT 2000
             """
             
+            query_start = time.time()
             cursor.execute(query)
+            query_elapsed = time.time() - query_start
+            logger.info(f"SQL query executed in {query_elapsed:.2f}s")
+            
+            fetch_data_start = time.time()
             rows = cursor.fetchall()
+            fetch_data_elapsed = time.time() - fetch_data_start
+            logger.info(f"Fetched {len(rows)} rows in {fetch_data_elapsed:.2f}s")
+            
             cursor.close()
             self.return_db_connection(conn)  # Return to pool instead of closing
             
             # Convert to list of dictionaries
+            convert_start = time.time()
             rows = [dict(row) for row in rows]
+            convert_elapsed = time.time() - convert_start
+            logger.info(f"Converted rows to dicts in {convert_elapsed:.2f}s")
             
-            logger.info(f"Direct SQL query returned {len(rows)} rows from database")
+            total_fetch = time.time() - fetch_start
+            logger.info(f"TOTAL FETCH TIME: {total_fetch:.2f}s (conn: {conn_elapsed:.2f}s, query: {query_elapsed:.2f}s, fetch: {fetch_data_elapsed:.2f}s, convert: {convert_elapsed:.2f}s)")
 
             # NEW TWO-TIER FILTERING: Primary (target clients) + Fallback (AI focus)
             primary_pool: List[Dict[str, Any]] = []
