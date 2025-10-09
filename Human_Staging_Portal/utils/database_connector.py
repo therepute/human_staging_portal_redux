@@ -9,6 +9,9 @@ from datetime import datetime, timezone
 from supabase import create_client, Client
 from dotenv import load_dotenv
 import logging
+import psycopg2
+from psycopg2.extras import RealDictCursor
+from psycopg2 import pool
 
 # Load environment variables
 load_dotenv()
@@ -28,7 +31,58 @@ class DatabaseConnector:
         self.staging_table = "soup_dedupe"
         self.destination_table = "the_soups"
         
+        # Direct PostgreSQL connection credentials from environment
+        self.db_host = os.getenv("DB_HOST", "")
+        self.db_name = os.getenv("DB_NAME", "")
+        self.db_password = os.getenv("DB_PASSWORD", "")
+        self.db_port = os.getenv("DB_PORT", "5432")
+        self.db_user = os.getenv("DB_USER", "")
+        
+        # Initialize connection pool for better performance
+        try:
+            self.connection_pool = psycopg2.pool.SimpleConnectionPool(
+                minconn=2,
+                maxconn=10,
+                host=self.db_host,
+                database=self.db_name,
+                user=self.db_user,
+                password=self.db_password,
+                port=self.db_port
+            )
+            logger.info(f"Initialized PostgreSQL connection pool (2-10 connections)")
+        except Exception as e:
+            logger.warning(f"Failed to create connection pool: {e}. Will use direct connections.")
+            self.connection_pool = None
+        
         logger.info(f"Initialized database connector for {self.supabase_url}")
+    
+    def get_db_connection(self):
+        """Get PostgreSQL connection from pool or create new one"""
+        if self.connection_pool:
+            try:
+                return self.connection_pool.getconn()
+            except Exception as e:
+                logger.warning(f"Failed to get connection from pool: {e}. Creating direct connection.")
+        
+        # Fallback to direct connection
+        return psycopg2.connect(
+            host=self.db_host,
+            database=self.db_name,
+            user=self.db_user,
+            password=self.db_password,
+            port=self.db_port
+        )
+    
+    def return_db_connection(self, conn):
+        """Return connection to pool"""
+        if self.connection_pool and conn:
+            try:
+                self.connection_pool.putconn(conn)
+            except Exception as e:
+                logger.warning(f"Failed to return connection to pool: {e}")
+                conn.close()
+        elif conn:
+            conn.close()
 
     async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Get user from Manual_Scrape_Users table by email"""
@@ -124,7 +178,24 @@ class DatabaseConnector:
                 "scraper_user": user_email  # Also track which user was served this article
             }
             
-            response = self.client.table(self.staging_table).update(update_data).eq("id", task_id).execute()
+            # Use direct PostgreSQL connection instead of Supabase client
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
+            
+            query = """
+            UPDATE soup_dedupe 
+            SET "WF_served_human_scrape" = %s, scraper_user = %s
+            WHERE id = %s
+            """
+            
+            cursor.execute(query, (workflow_status, user_email, task_id))
+            rows_affected = cursor.rowcount
+            
+            conn.commit()
+            cursor.close()
+            self.return_db_connection(conn)  # Return to pool
+            
+            response = type('obj', (object,), {'data': [{'id': task_id}] if rows_affected > 0 else []})()
             
             if response.data and len(response.data) > 0:
                 status_desc = "opened in window" if workflow_status == 1 else "extraction submitted"
@@ -140,36 +211,63 @@ class DatabaseConnector:
     async def get_available_tasks(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         NEW RESTRICTIVE LOGIC WITH AI FALLBACK:
-        1. Primary: Articles for specific clients (KFC/Databricks/Starface/WIP) + creator/unknown
-        2. Fallback: Articles with focus_industry = "AI" + creator/unknown
+        1. Primary: Articles for specific clients (KFC/Databricks/Starface/WIP) + creator/unknown/NULL
+        2. Fallback: Articles with focus_industry = "AI" + creator/unknown/NULL
         """
         try:
-            # Apply server-side filters for new restrictive criteria
-            response = (
-                self.client
-                .table(self.staging_table)
-                .select(
-                    "id, title, permalink_url, published_at, actor_name, source_title, source_url, "
-                    "summary, content, subscription_source, source, client_priority, focus_industry, "
-                    "headline_relevance, pub_tier, publication, clients, retry_count, dedupe_status, "
-                    "WF_Pre_Check_Complete, WF_Extraction_Complete, wf_timestamp_claimed_at, WF_TIMESTAMP_Pre_Check_Complete, WF_Patch_Duplicate_Syndicate, next_retry_at, last_modified, created_at"
-                )
-                .eq("extraction_path", 2)
-                .eq("dedupe_status", "original")
-                .eq("WF_Pre_Check_Complete", True)
-                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
-                .order("created_at", desc=True)
-                .limit(1000)
-                .execute()
-            )
-
-            rows: List[Dict[str, Any]] = response.data or []
+            # Use direct PostgreSQL connection for better control
+            conn = self.get_db_connection()
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            
+            # Optimized query - EXCLUDE large text columns (summary, content) for performance
+            # These fields are NOT used by the UI and slow down data transfer significantly
+            query = """
+            SELECT 
+                id, title, permalink_url, published_at, actor_name, source_title, publication,
+                subscription_source, source, client_priority, pub_tier, clients, focus_industry,
+                "WF_Pre_Check_Complete", "WF_Extraction_Complete", wf_timestamp_claimed_at, 
+                "WF_TIMESTAMP_Pre_Check_Complete", "WF_Patch_Duplicate_Syndicate", 
+                dedupe_status, created_at
+            FROM soup_dedupe 
+            WHERE 
+                extraction_path = 2 
+                AND dedupe_status = 'original' 
+                AND "WF_Pre_Check_Complete" = true 
+                AND ("WF_Patch_Duplicate_Syndicate" IN ('creator', 'unknown'))
+            ORDER BY created_at DESC 
+            LIMIT 2000
+            """
+            
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            cursor.close()
+            self.return_db_connection(conn)  # Return to pool instead of closing
+            
+            # Convert to list of dictionaries
+            rows = [dict(row) for row in rows]
+            
+            logger.info(f"Direct SQL query returned {len(rows)} rows from database")
 
             # NEW TWO-TIER FILTERING: Primary (target clients) + Fallback (AI focus)
             primary_pool: List[Dict[str, Any]] = []
             fallback_pool: List[Dict[str, Any]] = []
             now = datetime.now(timezone.utc)
             target_clients = ["KFC", "Databricks", "Starface", "WIP"]
+            
+            # Debug counters
+            debug_stats = {
+                "total_rows": len(rows),
+                "failed_pre_ok": 0,
+                "failed_not_done": 0,
+                "failed_not_claimed": 0,
+                "failed_dedupe_ok": 0,
+                "failed_pre_check_aged": 0,
+                "failed_valid_status": 0,
+                "passed_basic_checks": 0,
+                "has_target_client": 0,
+                "has_ai_focus": 0,
+                "no_criteria_match": 0
+            }
             
             for row in rows:
                 wf_pre = row.get("WF_Pre_Check_Complete")
@@ -197,9 +295,25 @@ class DatabaseConnector:
                         # If timestamp parsing fails, default to allowing the article
                         pre_check_aged = True
                 
+                # Track which checks fail
+                if not pre_ok:
+                    debug_stats["failed_pre_ok"] += 1
+                if not not_done:
+                    debug_stats["failed_not_done"] += 1
+                if not not_claimed:
+                    debug_stats["failed_not_claimed"] += 1
+                if not dedupe_ok:
+                    debug_stats["failed_dedupe_ok"] += 1
+                if not pre_check_aged:
+                    debug_stats["failed_pre_check_aged"] += 1
+                if not valid_status:
+                    debug_stats["failed_valid_status"] += 1
+                
                 # Only proceed if basic criteria are met
                 if not (pre_ok and not_done and not_claimed and dedupe_ok and pre_check_aged and valid_status):
                     continue
+                
+                debug_stats["passed_basic_checks"] += 1
                 
                 # PRIMARY POOL: Check if clients contains any target keywords (case insensitive)
                 has_target_client = False
@@ -208,6 +322,7 @@ class DatabaseConnector:
                     has_target_client = any(keyword.lower() in clients_lower for keyword in target_clients)
                 
                 if has_target_client:
+                    debug_stats["has_target_client"] += 1
                     primary_pool.append(row)
                     continue
                 
@@ -220,7 +335,13 @@ class DatabaseConnector:
                         has_ai_focus = str(focus_industry).strip() == "AI"
                 
                 if has_ai_focus:
+                    debug_stats["has_ai_focus"] += 1
                     fallback_pool.append(row)
+                else:
+                    debug_stats["no_criteria_match"] += 1
+            
+            # Log debug statistics to diagnose filtering
+            logger.info(f"DEBUG STATS: {debug_stats}")
             
             # Use primary pool if available, otherwise fallback to AI pool
             if primary_pool:
@@ -355,39 +476,60 @@ class DatabaseConnector:
         """
         try:
             from datetime import datetime, timezone
+            import time
             
+            start_time = time.time()
             claim_timestamp = datetime.now(timezone.utc).isoformat()
             
             # Atomic update: claim the task only if it meets NEW RESTRICTIVE criteria
-            response = (
-                self.client
-                .table(self.staging_table)
-                .update({"wf_timestamp_claimed_at": claim_timestamp})
-                .eq("id", task_id)
-                .eq("extraction_path", 2)
-                .eq("dedupe_status", "original")
-                .eq("WF_Pre_Check_Complete", True)
-                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
-                .is_("wf_timestamp_claimed_at", "null")  # Only if unclaimed
-                .neq("WF_Extraction_Complete", True)  # Exclude only completed tasks (TRUE)
-                .execute()
-            )
+            conn = self.get_db_connection()
+            cursor = conn.cursor()
             
-            # Verify the claim actually worked by checking if the record was updated
-            # Also verify the article still meets target client criteria
-            verify_response = (
-                self.client
-                .table(self.staging_table)
-                .select("wf_timestamp_claimed_at, clients, WF_Patch_Duplicate_Syndicate, focus_industry")
-                .eq("id", task_id)
-                .single()
-                .execute()
-            )
+            query = """
+            UPDATE soup_dedupe 
+            SET wf_timestamp_claimed_at = %s
+            WHERE id = %s
+                AND extraction_path = 2
+                AND dedupe_status = 'original'
+                AND "WF_Pre_Check_Complete" = true
+                AND "WF_Patch_Duplicate_Syndicate" IN ('creator', 'unknown')
+                AND wf_timestamp_claimed_at IS NULL
+                AND "WF_Extraction_Complete" != true
+            """
             
-            current_timestamp = verify_response.data.get("wf_timestamp_claimed_at") if verify_response.data else None
-            clients_val = verify_response.data.get("clients") if verify_response.data else None
-            patch_status = verify_response.data.get("WF_Patch_Duplicate_Syndicate") if verify_response.data else None
-            focus_industry = verify_response.data.get("focus_industry") if verify_response.data else None
+            cursor.execute(query, (claim_timestamp, task_id))
+            rows_affected = cursor.rowcount
+            
+            conn.commit()
+            cursor.close()
+            self.return_db_connection(conn)  # Return to pool
+            
+            # Quick exit if update failed (task already claimed)
+            if rows_affected == 0:
+                elapsed = time.time() - start_time
+                logger.debug(f"Task {task_id} already claimed (took {elapsed:.2f}s)")
+                return False
+            
+            # Verify the claim worked (optional safety check)
+            verify_conn = self.get_db_connection()
+            verify_cursor = verify_conn.cursor(cursor_factory=RealDictCursor)
+            
+            verify_query = """
+            SELECT wf_timestamp_claimed_at, clients, "WF_Patch_Duplicate_Syndicate", focus_industry
+            FROM soup_dedupe 
+            WHERE id = %s
+            """
+            
+            verify_cursor.execute(verify_query, (task_id,))
+            verify_result = verify_cursor.fetchone()
+            
+            verify_cursor.close()
+            self.return_db_connection(verify_conn)
+            
+            current_timestamp = verify_result.get("wf_timestamp_claimed_at") if verify_result else None
+            clients_val = verify_result.get("clients") if verify_result else None
+            patch_status = verify_result.get("WF_Patch_Duplicate_Syndicate") if verify_result else None
+            focus_industry = verify_result.get("focus_industry") if verify_result else None
             
             # Verify article meets either PRIMARY (target clients) OR FALLBACK (AI focus) criteria
             target_clients = ["KFC", "Databricks", "Starface", "WIP"]
@@ -413,7 +555,7 @@ class DatabaseConnector:
             logger.info(f"Verification for task {task_id}: expected={claim_timestamp}, actual={current_timestamp}, clients={clients_val}, focus={focus_industry}, criteria={criteria_type}, status={patch_status}")
             
             # Check if the task was successfully claimed by verifying timestamp is set and meets criteria
-            if (verify_response.data and current_timestamp is not None and meets_criteria and patch_status in ["creator", "unknown"]):
+            if (verify_result and current_timestamp is not None and meets_criteria and patch_status in ["creator", "unknown"]):
                 # Parse both timestamps to compare them properly
                 from datetime import datetime, timezone
                 try:
@@ -428,11 +570,12 @@ class DatabaseConnector:
                     
                     # Check if timestamps are within 5 seconds (allowing for minor differences)
                     time_diff = abs((db_time - our_time).total_seconds())
+                    elapsed = time.time() - start_time
                     if time_diff <= 5:
-                        logger.info(f"Task {task_id} successfully claimed by scraper {scraper_id} (time_diff: {time_diff}s)")
+                        logger.info(f"Task {task_id} successfully claimed by scraper {scraper_id} (time_diff: {time_diff}s, elapsed: {elapsed:.2f}s)")
                         return True
                     else:
-                        logger.warning(f"Task {task_id} timestamp mismatch - time_diff: {time_diff}s")
+                        logger.warning(f"Task {task_id} timestamp mismatch - time_diff: {time_diff}s (elapsed: {elapsed:.2f}s)")
                         return False
                 except Exception as e:
                     logger.error(f"Error parsing timestamps for task {task_id}: {e}")
@@ -440,11 +583,13 @@ class DatabaseConnector:
                     logger.info(f"Task {task_id} claimed (timestamp exists, fallback success)")
                     return True
             else:
-                logger.warning(f"Task {task_id} could not be claimed - verification failed (expected: {claim_timestamp}, got: {current_timestamp})")
+                elapsed = time.time() - start_time
+                logger.warning(f"Task {task_id} claim verification failed (elapsed: {elapsed:.2f}s)")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error claiming task {task_id}: {e}")
+            elapsed = time.time() - start_time if 'start_time' in locals() else 0
+            logger.error(f"Error claiming task {task_id}: {e} (elapsed: {elapsed:.2f}s)")
             return False
 
     async def submit_extraction(self, task_id: str, scraper_id: str, extracted_data: Dict[str, Any], scraper_user: str = None) -> bool:
