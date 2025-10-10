@@ -890,6 +890,37 @@ async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector
         logger.error(f"Error releasing expired tasks: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/tasks/{task_id}/unclaim", response_model=Dict[str, Any])
+async def unclaim_task(task_id: str, db: DatabaseConnector = Depends(get_db)):
+    """Manually release a claimed task (allows users to unclaim if they can't complete it)"""
+    try:
+        # Release the specific task by setting wf_timestamp_claimed_at to NULL
+        update_response = (
+            db.client
+            .table(db.staging_table)
+            .update({"wf_timestamp_claimed_at": None})
+            .eq("id", task_id)
+            .execute()
+        )
+        
+        if update_response.data:
+            logger.info(f"✓ Task {task_id} manually unclaimed")
+            return {
+                "success": True,
+                "task_id": task_id,
+                "message": "Task unclaimed successfully",
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "task_id": task_id,
+                "message": "Task not found or already unclaimed"
+            }
+    except Exception as e:
+        logger.error(f"Error unclaiming task {task_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/maintenance/expired-tasks", response_model=Dict[str, Any])
 async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):
     """Check how many tasks are currently expired without releasing them"""
@@ -930,18 +961,21 @@ async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector =
 
 # Background task to periodically release expired tasks
 async def periodic_maintenance():
-    """Background task to release expired tasks every 10 minutes"""
+    """Background task to release expired tasks every 5 minutes"""
     while True:
         try:
             if db_connector:
-                released = await db_connector.release_expired_tasks(30)
+                # Release tasks claimed for more than 15 minutes (reduced from 30)
+                released = await db_connector.release_expired_tasks(15)
                 if released > 0:
-                    logger.info(f"Released {released} expired tasks")
+                    logger.info(f"🔓 MAINTENANCE: Released {released} expired tasks (claimed >15 min ago)")
+                else:
+                    logger.debug(f"✓ MAINTENANCE: No expired tasks to release")
         except Exception as e:
-            logger.error(f"Periodic maintenance error: {e}")
+            logger.error(f"❌ MAINTENANCE ERROR: {e}")
         
-        # Wait 10 minutes
-        await asyncio.sleep(600)
+        # Wait 5 minutes (reduced from 10)
+        await asyncio.sleep(300)
 
 @app.on_event("startup")
 async def start_background_tasks():
