@@ -215,6 +215,8 @@ def _find_credentials_for_article(permalink_url: Optional[str], publication: Opt
 async def lifespan(app: FastAPI):
     """Initialize database connection on startup"""
     global db_connector
+    maintenance_task = None
+    
     try:
         # Best-effort DB init: allow UI to boot even if Supabase is not configured
         try:
@@ -228,12 +230,24 @@ async def lifespan(app: FastAPI):
         yaml_path = os.path.abspath(os.path.join(base_dir, "..", "login_credentials.yaml"))
         _load_subscription_credentials(yaml_path)
 
+        # Start background maintenance task
+        if db_connector:
+            maintenance_task = asyncio.create_task(periodic_maintenance())
+            logger.info("✅ Started background maintenance task (releases claims every 5 min)")
+
         if db_connector is None:
             logger.info("✅ Human Staging Portal API started in degraded mode (no database)")
         else:
             logger.info("✅ Human Staging Portal API started successfully")
         yield
     finally:
+        # Cleanup: cancel background task
+        if maintenance_task:
+            maintenance_task.cancel()
+            try:
+                await maintenance_task
+            except asyncio.CancelledError:
+                pass
         logger.info("🔄 Human Staging Portal API shutting down")
 
 # Initialize FastAPI app
@@ -976,11 +990,6 @@ async def periodic_maintenance():
         
         # Wait 5 minutes (reduced from 10)
         await asyncio.sleep(300)
-
-@app.on_event("startup")
-async def start_background_tasks():
-    """Start background maintenance tasks"""
-    asyncio.create_task(periodic_maintenance())
 
 if __name__ == "__main__":
     # For development - use environment variables

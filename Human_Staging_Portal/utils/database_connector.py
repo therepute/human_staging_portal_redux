@@ -217,17 +217,13 @@ class DatabaseConnector:
         try:
             import time
             fetch_start = time.time()
-            
             # Use direct PostgreSQL connection for better control
             conn_start = time.time()
             conn = self.get_db_connection()
             conn_elapsed = time.time() - conn_start
             logger.info(f"Got DB connection in {conn_elapsed:.2f}s")
-            
             cursor = conn.cursor(cursor_factory=RealDictCursor)
-            
             # Optimized query - EXCLUDE large text columns (summary, content) for performance
-            # These fields are NOT used by the UI and slow down data transfer significantly
             query = """
             SELECT 
                 id, title, permalink_url, published_at, actor_name, source_title, publication,
@@ -244,7 +240,6 @@ class DatabaseConnector:
             ORDER BY created_at DESC 
             LIMIT 2000
             """
-            
             query_start = time.time()
             cursor.execute(query)
             query_elapsed = time.time() - query_start
@@ -256,7 +251,7 @@ class DatabaseConnector:
             logger.info(f"Fetched {len(rows)} rows in {fetch_data_elapsed:.2f}s")
             
             cursor.close()
-            self.return_db_connection(conn)  # Return to pool instead of closing
+            self.return_db_connection(conn)
             
             # Convert to list of dictionaries
             convert_start = time.time()
@@ -888,53 +883,52 @@ class DatabaseConnector:
         """
         Release tasks that have been claimed but not completed within timeout
         Uses wf_timestamp_claimed_at to find expired tasks
+        Uses direct PostgreSQL for reliability
         """
         try:
             from datetime import datetime, timezone, timedelta
             
             # Calculate cutoff time (tasks claimed before this are expired)
             cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
-            cutoff_iso = cutoff_time.isoformat()
             
-            # First, get count of tasks that match our NEW RESTRICTIVE criteria (for logging)
-            count_response = (
-                self.client
-                .table(self.staging_table)
-                .select("id", count="exact")
-                .eq("extraction_path", 2)
-                .eq("dedupe_status", "original")
-                .eq("WF_Pre_Check_Complete", True)
-                .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
-                .is_("WF_Extraction_Complete", "null")
-                .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
-                .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
-                .execute()
-            )
+            # Use direct PostgreSQL connection for atomic operation
+            conn = self.get_db_connection()
+            if not conn:
+                logger.error("Failed to get database connection for release_expired_tasks")
+                return 0
             
-            released_count = count_response.count or 0
-            
-            if released_count > 0:
-                # Release the expired tasks by setting wf_timestamp_claimed_at to NULL (NEW RESTRICTIVE criteria)
-                response = (
-                    self.client
-                    .table(self.staging_table)
-                    .update({"wf_timestamp_claimed_at": None})  # Release the claim
-                    .eq("extraction_path", 2)
-                    .eq("dedupe_status", "original")
-                    .eq("WF_Pre_Check_Complete", True)
-                    .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
-                    .is_("WF_Extraction_Complete", "null")
-                    .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
-                    .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
-                    .execute()
-                )
-                
-                logger.info(f"Released {released_count} expired tasks (claimed > {timeout_minutes} minutes ago)")
-            
-            return released_count
+            try:
+                with conn.cursor() as cur:
+                    # Release expired claims in a single atomic UPDATE
+                    release_query = """
+                    UPDATE soup_dedupe
+                    SET wf_timestamp_claimed_at = NULL
+                    WHERE extraction_path = 2
+                      AND dedupe_status = 'original'
+                      AND "WF_Pre_Check_Complete" = TRUE
+                      AND ("WF_Patch_Duplicate_Syndicate" IN ('creator', 'unknown'))
+                      AND wf_timestamp_claimed_at IS NOT NULL
+                      AND wf_timestamp_claimed_at < %s
+                      AND ("WF_Extraction_Complete" IS NULL OR "WF_Extraction_Complete" = FALSE)
+                    """
+                    
+                    cur.execute(release_query, (cutoff_time,))
+                    conn.commit()
+                    
+                    released_count = cur.rowcount
+                    
+                    if released_count > 0:
+                        logger.info(f"Released {released_count} expired tasks (claimed > {timeout_minutes} minutes ago)")
+                    
+                    return released_count
+                    
+            finally:
+                self.return_db_connection(conn)
             
         except Exception as e:
             logger.error(f"Error releasing expired tasks: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
 
     # ===================== Admin Metrics =====================
