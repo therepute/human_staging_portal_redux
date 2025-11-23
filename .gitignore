@@ -1,7 +1,66 @@
 
-# env files
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+*.pytest_cache
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+virtualenv/
+*.venv
+
+# Environment variables
 .env
 .env.*
 *.env
 .env.local
 .env.*.local
+.env.production
+.env.development
+.env.test
+.env.staging
+# Exception: .env.example should be tracked as a template
+!.env.example
+
+# Credentials
+login_credentials.yaml
+*.credentials.yaml
+credentials.yaml
+
+# Logs
+*.log
+logs/
+portal*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config files with secrets
+config/*.secret.yaml
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Testing
+.coverage
+htmlcov/
+.tox/

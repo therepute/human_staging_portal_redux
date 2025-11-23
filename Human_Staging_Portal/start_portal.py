@@ -3,7 +3,6 @@
 Human Staging Portal Startup Script
 Simple script to start the portal with environment variables loaded
 """
-
 import os
 import sys
 import subprocess
@@ -11,10 +10,8 @@ from dotenv import load_dotenv
 
 def main():
     """Start the Human Staging Portal API server"""
-    
     # Load environment variables from .env file
     load_dotenv()
-    
     # Check for required environment variables
     required_vars = ["SUPABASE_URL", "SUPABASE_ANON_KEY"]
     missing_vars = []

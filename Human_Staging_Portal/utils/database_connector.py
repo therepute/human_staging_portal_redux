@@ -53,7 +53,6 @@ class DatabaseConnector:
         except Exception as e:
             logger.warning(f"Failed to create connection pool: {e}. Will use direct connections.")
             self.connection_pool = None
-        
         logger.info(f"Initialized database connector for {self.supabase_url}")
     
     def get_db_connection(self):
@@ -63,7 +62,6 @@ class DatabaseConnector:
                 return self.connection_pool.getconn()
             except Exception as e:
                 logger.warning(f"Failed to get connection from pool: {e}. Creating direct connection.")
-        
         # Fallback to direct connection
         return psycopg2.connect(
             host=self.db_host,
@@ -88,7 +86,6 @@ class DatabaseConnector:
         """Get user from Manual_Scrape_Users table by email"""
         try:
             response = self.client.table("Manual_Scrape_Users").select("*").eq("email", email).eq("active", True).execute()
-            
             if response.data and len(response.data) > 0:
                 return response.data[0]
             return None
@@ -107,7 +104,6 @@ class DatabaseConnector:
                 "role": "user",
                 "active": True
             }
-            
             response = self.client.table("Manual_Scrape_Users").insert(user_data).execute()
             
             if response.data and len(response.data) > 0:

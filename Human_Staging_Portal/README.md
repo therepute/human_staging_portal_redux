@@ -123,6 +123,38 @@ Publisher-specific cooldown rules prevent overloading:
 - **Domain Rules**: Publisher-specific cooldowns
 - **API Settings**: CORS enabled for Retool integration
 
+## 🔐 Security Best Practices
+
+### Environment Variables
+- **NEVER** commit `.env` files to version control
+- Use `.env.example` as a template for required variables
+- Store sensitive credentials in environment variables or secure secret management services
+
+### Subscription Credentials
+- **NEVER** commit `login_credentials.yaml` or similar credential files to git
+- Store credentials in one of these secure locations:
+  - **Option A**: Encrypted database table with restricted access
+  - **Option B**: Secure file storage outside the repository (not in git)
+  - **Option C**: Secret management service (AWS Secrets Manager, HashiCorp Vault, etc.)
+- Rotate credentials immediately if accidentally exposed
+- Use `.gitignore` to prevent accidental commits
+
+### Deployment Security
+- Use strong, randomly generated `SESSION_SECRET_KEY` (generate with `secrets.token_urlsafe(32)`)
+- Enable HTTPS in production (Railway provides this automatically)
+- Restrict database access to application IPs only
+- Use read-only database credentials where possible
+- Enable audit logging for sensitive operations
+- Regularly review and rotate API keys
+
+### Credential Rotation
+If credentials are exposed:
+1. Immediately rotate all affected passwords
+2. Review access logs for unauthorized usage
+3. Purge sensitive data from git history using `git filter-branch` or `BFG Repo-Cleaner`
+4. Notify stakeholders about potential exposure
+5. Update security policies to prevent recurrence
+
 ## 📊 Monitoring
 
 ### Health Check Response

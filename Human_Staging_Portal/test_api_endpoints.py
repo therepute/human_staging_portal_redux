@@ -3,7 +3,6 @@
 API Endpoint Test Script
 Tests all Human Staging Portal API endpoints to verify functionality
 """
-
 import asyncio
 import json
 from datetime import datetime
@@ -20,13 +19,10 @@ logger = logging.getLogger(__name__)
 
 def test_api_endpoints():
     """Test all API endpoints"""
-    
     print("🧪 Testing Human Staging Portal API Endpoints")
     print("=" * 60)
-    
     # Create test client
     client = TestClient(app)
-    
     # Test 1: Root endpoint
     print("1️⃣ Testing root endpoint...")
     response = client.get("/")
@@ -40,7 +36,6 @@ def test_api_endpoints():
         print(f"   ❌ Root endpoint failed: {response.text}")
     
     print()
-    
     # Test 2: Health check
     print("2️⃣ Testing health check...")
     response = client.get("/api/health")

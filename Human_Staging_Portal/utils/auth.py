@@ -3,15 +3,12 @@
 Authentication utilities for Human Staging Portal
 Provides user authentication, session management, and login/logout functionality
 """
-
 import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Optional, Any
 from fastapi import Request, HTTPException, status
 import logging
-
 logger = logging.getLogger(__name__)
-
 # In-memory session store (in production, use Redis or database)
 sessions: Dict[str, Dict[str, Any]] = {}
 
@@ -46,14 +43,11 @@ def get_session(session_token: str) -> Optional[Dict[str, Any]]:
     """Get session data if valid and not expired"""
     if not session_token or session_token not in sessions:
         return None
-    
     session_data = sessions[session_token]
-    
     # Check if session has expired
     if datetime.now(timezone.utc) - session_data["created_at"] > timedelta(hours=SESSION_TIMEOUT_HOURS):
         del sessions[session_token]
         return None
-    
     # Update last activity
     session_data["last_activity"] = datetime.now(timezone.utc)
     return session_data
