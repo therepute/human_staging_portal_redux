@@ -4,23 +4,23 @@ Human Staging Portal - Main FastAPI Server
 Provides endpoints for Retool integration and human scraper task management
 """
 
-import os
 import asyncio
-from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+import logging
+import os
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone, timedelta
+from typing import Dict, Any, Optional
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Request, Form
+import uvicorn
+import yaml
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from urllib.parse import urlparse
-import yaml
-import uvicorn
-import logging
 
 # Import DatabaseConnector in a way that works in both deployment modes:
 # 1) Started from repo root (import path: Human_Staging_Portal.main_api)
@@ -37,6 +37,14 @@ except ModuleNotFoundError:
         authenticate_user, register_user, create_session, get_current_user,
         destroy_session, require_auth, get_session_stats, cleanup_expired_sessions
     )
+
+# Constants
+RECENT_WINDOW_SECONDS = 600  # 10 minutes
+SESSION_TIMEOUT_SECONDS = 8 * 3600  # 8 hours
+MAINTENANCE_INTERVAL_SECONDS = 300  # 5 minutes
+TASK_EXPIRY_TIMEOUT_MINUTES = 15
+MAX_TASK_ASSIGNMENT_ATTEMPTS = 10
+TASK_ASSIGNMENT_RETRY_DELAY = 0.01  # 10ms
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -84,21 +92,22 @@ subscription_credentials_index: Dict[str, Dict[str, Any]] = {}
 subscription_name_index: Dict[str, Dict[str, Any]] = {}
 
 # In-memory recent task tracker to avoid re-serving the same article immediately
-RECENT_WINDOW_SECONDS = 600  # 10 minutes
 recent_tasks_by_scraper: Dict[str, Dict[str, float]] = {}
 
+
 def _mark_recent(scraper_id: str, task_id: str) -> None:
-    import time
+    """Mark a task as recently served to prevent immediate re-selection."""
     bucket = recent_tasks_by_scraper.setdefault(scraper_id, {})
     bucket[task_id] = time.time()
 
+
 def _prune_and_is_recent(scraper_id: str, task_id: str) -> bool:
-    import time
+    """Check if a task was recently served and prune expired entries."""
     now = time.time()
     bucket = recent_tasks_by_scraper.get(scraper_id)
     if not bucket:
         return False
-    # Prune
+    # Prune expired entries
     expired = [tid for tid, ts in bucket.items() if now - ts > RECENT_WINDOW_SECONDS]
     for tid in expired:
         bucket.pop(tid, None)
@@ -122,6 +131,14 @@ def _normalize_domain(domain: str) -> str:
     if len(parts) >= 2:
         host = ".".join(parts[-2:])
     return host
+
+
+def _score_credential_entry(entry: Dict[str, Any]) -> tuple:
+    """Score credential entries to prefer subscriptions@berlinrosen.com and entries with both email+password."""
+    return (
+        1 if (entry.get("email") == "subscriptions@berlinrosen.com") else 0,
+        1 if (entry.get("email") and entry.get("password")) else 0,
+    )
 
 
 def _load_subscription_credentials(yaml_path: str) -> None:
@@ -162,13 +179,7 @@ def _load_subscription_credentials(yaml_path: str) -> None:
                 if existing is None:
                     domain_index[normalized_domain] = minimal_entry
                 else:
-                    def score(e: Dict[str, Any]) -> tuple:
-                        # Prefer entries with that email, then with both email+password non-empty
-                        return (
-                            1 if (e.get("email") == "subscriptions@berlinrosen.com") else 0,
-                            1 if (e.get("email") and e.get("password")) else 0,
-                        )
-                    if score(minimal_entry) > score(existing):
+                    if _score_credential_entry(minimal_entry) > _score_credential_entry(existing):
                         domain_index[normalized_domain] = minimal_entry
 
             # Name index (case-insensitive, first wins unless better email)
@@ -178,16 +189,19 @@ def _load_subscription_credentials(yaml_path: str) -> None:
                 if existing is None:
                     name_index[key] = minimal_entry
                 else:
-                    if existing.get("email") != "subscriptions@berlinrosen.com" and minimal_entry.get("email") == "subscriptions@berlinrosen.com":
+                    preferred_email = "subscriptions@berlinrosen.com"
+                    if existing.get("email") != preferred_email and minimal_entry.get("email") == preferred_email:
                         name_index[key] = minimal_entry
 
         subscription_credentials_index = domain_index
         subscription_name_index = name_index
-        logger.info(f"🔐 Loaded {len(domain_index)} credential domains and {len(name_index)} names from YAML")
+        logger.info(
+            f"🔐 Loaded {len(domain_index)} credential domains and {len(name_index)} names from YAML"
+        )
     except FileNotFoundError:
         logger.warning(f"Subscription credentials YAML not found at: {yaml_path}")
     except Exception as e:
-        logger.error(f"Failed to load subscription credentials: {e}")
+        logger.error(f"Failed to load subscription credentials: {e}", exc_info=True)
 
 
 def _find_credentials_for_article(permalink_url: Optional[str], publication: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -259,7 +273,6 @@ app = FastAPI(
 )
 
 # Mount static files and templates
-import os
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
@@ -296,10 +309,10 @@ class SubmissionRequest(BaseModel):
     publication: Optional[str] = None
     date: Optional[str] = None
     story_link: Optional[str] = None
-    search: Optional[str] = None  # Added: subscription_source field
-    source: Optional[str] = None  # Added: source field  
-    client_priority: Optional[int] = None  # Added: client_priority field
-    pub_tier: Optional[int] = None  # Added: pub_tier field
+    search: Optional[str] = None
+    source: Optional[str] = None
+    client_priority: Optional[int] = None
+    pub_tier: Optional[int] = None
     duration_sec: Optional[int] = None
 
 class FailureRequest(BaseModel):
@@ -325,9 +338,11 @@ class AuthResponse(BaseModel):
     message: str
     user: Optional[Dict[str, Any]] = None
 
-def get_db():
-    """Dependency to get database connector"""
-    # Return a degraded-mode stub when DB isn't initialized so endpoints gracefully degrade
+def get_db() -> DatabaseConnector:
+    """Dependency to get database connector.
+    
+    Returns a degraded-mode stub when DB isn't initialized so endpoints gracefully degrade.
+    """
     return db_connector or null_db
 
 @app.get("/", response_class=HTMLResponse)
@@ -375,7 +390,12 @@ async def login(login_request: LoginRequest, db: DatabaseConnector = Depends(get
                     "role": user.get("role", "user")
                 }
             })
-            response.set_cookie(key="session_token", value=session_token, httponly=True, max_age=8*3600)  # 8 hours
+            response.set_cookie(
+                key="session_token",
+                value=session_token,
+                httponly=True,
+                max_age=SESSION_TIMEOUT_SECONDS
+            )
             return response
         else:
             return AuthResponse(success=False, message="User not found. Please register first.")
@@ -412,16 +432,18 @@ async def register(register_request: RegisterRequest, db: DatabaseConnector = De
                     "role": user.get("role", "user")
                 }
             })
-            response.set_cookie(key="session_token", value=session_token, httponly=True, max_age=8*3600)  # 8 hours
+            response.set_cookie(
+                key="session_token",
+                value=session_token,
+                httponly=True,
+                max_age=SESSION_TIMEOUT_SECONDS
+            )
             return response
         else:
             logger.error(f"Registration failed for {register_request.email}: register_user returned None")
             return AuthResponse(success=False, message="Registration failed. Please try again.")
     except Exception as e:
-        logger.error(f"Registration error for {register_request.email}: {e}")
-        import traceback
-        tb = traceback.format_exc()
-        logger.error(f"Registration traceback: {tb}")
+        logger.error(f"Registration error for {register_request.email}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/auth/logout")
@@ -464,8 +486,8 @@ async def get_current_user_api(request: Request):
         raise HTTPException(status_code=401, detail="Not authenticated")
 
 @app.get("/api/", response_model=Dict[str, str])
-async def api_root():
-    """API health check endpoint"""
+async def api_root() -> Dict[str, str]:
+    """API health check endpoint."""
     return {
         "service": "Human Staging Portal API",
         "status": "running",
@@ -500,7 +522,6 @@ async def health_check(db: DatabaseConnector = Depends(get_db)):
 async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db)):
     """Get the next highest priority task for a scraper"""
     try:
-        import time
         request_start = time.time()
         
         # Require authentication
@@ -527,7 +548,7 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
         # Try to assign tasks in order until one succeeds (atomic claiming)
         # Limit attempts to avoid long delays
         assigned_task = None
-        max_attempts = min(10, len(filtered))  # Try max 10 tasks
+        max_attempts = min(MAX_TASK_ASSIGNMENT_ATTEMPTS, len(filtered))
         
         assign_start = time.time()
         attempts = 0
@@ -540,7 +561,7 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
                 break
             # If this isn't the first attempt and we failed, add small delay
             if i > 0:
-                await asyncio.sleep(0.01)  # 10ms delay between retries
+                await asyncio.sleep(TASK_ASSIGNMENT_RETRY_DELAY)
         
         assign_elapsed = time.time() - assign_start
         logger.info(f"Task assignment: {'SUCCESS' if assigned_task else 'FAILED'} in {assign_elapsed:.2f}s ({attempts} attempts)")
@@ -601,8 +622,8 @@ async def get_next_task(request: Request, db: DatabaseConnector = Depends(get_db
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tasks/available", response_model=Dict[str, Any])
-async def get_available_tasks(limit: int = 10, db: DatabaseConnector = Depends(get_db)):
-    """Get list of available tasks (for monitoring)"""
+async def get_available_tasks(limit: int = 10, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get list of available tasks (for monitoring)."""
     try:
         tasks = await db.get_available_tasks(limit=limit)
         
@@ -613,11 +634,11 @@ async def get_available_tasks(limit: int = 10, db: DatabaseConnector = Depends(g
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Error getting available tasks: {e}")
+        logger.error(f"Error getting available tasks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tasks/availability_report", response_model=Dict[str, Any])
-async def availability_report(db: DatabaseConnector = Depends(get_db)):
+async def availability_report(db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
     """Diagnostics endpoint to understand why no tasks are available."""
     try:
         if not hasattr(db, "availability_report"):
@@ -625,18 +646,18 @@ async def availability_report(db: DatabaseConnector = Depends(get_db)):
         report = await db.availability_report()
         return report
     except Exception as e:
-        logger.error(f"Error generating availability report: {e}")
+        logger.error(f"Error generating availability report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/recent", response_model=Dict[str, Any])
-async def get_recent(limit: int = 50, db: DatabaseConnector = Depends(get_db)):
+async def get_recent(limit: int = 50, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
     """Return the most recent human-portal submissions (up to limit)."""
     try:
         limit = max(1, min(limit, 100))
         rows = await db.get_recent_human(limit)
         return {"success": True, "count": len(rows), "items": rows}
     except Exception as e:
-        logger.error(f"Error getting recent list: {e}")
+        logger.error(f"Error getting recent list: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tasks/submit", response_model=Dict[str, Any])
@@ -658,10 +679,10 @@ async def submit_extraction(submission: SubmissionRequest, request: Request, db:
             "publication": submission.publication,
             "date": submission.date,
             "story_link": submission.story_link,
-            "search": submission.search,  # Add search field
-            "source": submission.source,  # Add source field
-            "client_priority": submission.client_priority,  # Add client_priority field
-            "pub_tier": submission.pub_tier,  # Add pub_tier field
+            "search": submission.search,
+            "source": submission.source,
+            "client_priority": submission.client_priority,
+            "pub_tier": submission.pub_tier,
             "duration_sec": submission.duration_sec
         }
         
@@ -669,7 +690,7 @@ async def submit_extraction(submission: SubmissionRequest, request: Request, db:
         
         # Submit to database: scraper_id from request (human_portal_user), scraper_user is authenticated email
         success = await db.submit_extraction(
-            submission.task_id, 
+            submission.task_id,
             submission.scraper_id,  # Use the scraper_id from request (human_portal_user)
             extracted_data,
             user_email  # Pass user email as scraper_user
@@ -702,11 +723,10 @@ async def submit_extraction(submission: SubmissionRequest, request: Request, db:
             )
             
     except Exception as e:
-        logger.error(f"💥 Exception in submit endpoint for task {submission.task_id}: {e}")
-        logger.error(f"💥 Exception type: {type(e).__name__}")
-        import traceback
-        tb = traceback.format_exc()
-        logger.error(f"💥 Full traceback: {tb}")
+        logger.error(
+            f"💥 Exception in submit endpoint for task {submission.task_id}: {e}",
+            exc_info=True
+        )
         raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 @app.post("/api/tasks/fail", response_model=Dict[str, Any])
@@ -741,15 +761,12 @@ async def fail_task(failure: FailureRequest, request: Request, db: DatabaseConne
             )
             
     except Exception as e:
-        logger.error(f"Error failing task {failure.task_id}: {e}")
-        import traceback
-        tb = traceback.format_exc()
-        logger.error(f"Full traceback: {tb}")
+        logger.error(f"Error failing task {failure.task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/scrapers/{scraper_id}/tasks", response_model=Dict[str, Any])
-async def get_scraper_tasks(scraper_id: str, db: DatabaseConnector = Depends(get_db)):
-    """Get all tasks currently assigned to a specific scraper"""
+async def get_scraper_tasks(scraper_id: str, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get all tasks currently assigned to a specific scraper."""
     try:
         tasks = await db.get_scraper_tasks(scraper_id)
         
@@ -761,12 +778,12 @@ async def get_scraper_tasks(scraper_id: str, db: DatabaseConnector = Depends(get
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Error getting tasks for scraper {scraper_id}: {e}")
+        logger.error(f"Error getting tasks for scraper {scraper_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tasks/{task_id}/fields", response_model=Dict[str, Any])
-async def analyze_task_fields(task_id: str, db: DatabaseConnector = Depends(get_db)):
-    """Analyze which fields are required vs pre-filled for smart field detection"""
+async def analyze_task_fields(task_id: str, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Analyze which fields are required vs pre-filled for smart field detection."""
     try:
         field_analysis = await db.analyze_required_fields(task_id)
         
@@ -783,12 +800,12 @@ async def analyze_task_fields(task_id: str, db: DatabaseConnector = Depends(get_
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error analyzing fields for task {task_id}: {e}")
+        logger.error(f"Error analyzing fields for task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tasks/{task_id}", response_model=Dict[str, Any])
-async def get_task_details(task_id: str, db: DatabaseConnector = Depends(get_db)):
-    """Get details for a specific task"""
+async def get_task_details(task_id: str, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get details for a specific task."""
     try:
         task = await db.get_task_by_id(task_id)
         if not task:
@@ -807,12 +824,12 @@ async def get_task_details(task_id: str, db: DatabaseConnector = Depends(get_db)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting task {task_id}: {e}")
+        logger.error(f"Error getting task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/task", response_model=Dict[str, Any])
-async def get_task_details_query(task_id: str, db: DatabaseConnector = Depends(get_db)):
-    """Same as get_task_details, but takes task_id as a query parameter to support IDs containing slashes."""
+async def get_task_details_query(task_id: str, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get task details via query parameter (supports IDs containing slashes)."""
     try:
         task = await db.get_task_by_id(task_id)
         if not task:
@@ -828,45 +845,48 @@ async def get_task_details_query(task_id: str, db: DatabaseConnector = Depends(g
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting task {task_id} via query: {e}")
+        logger.error(f"Error getting task {task_id} via query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # ===================== Admin endpoints (read-only) =====================
 @app.get("/api/admin/human_per_day", response_model=Dict[str, Any])
-async def admin_human_per_day(days: int = 14, db: DatabaseConnector = Depends(get_db)):
+async def admin_human_per_day(days: int = 14, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get human submissions per day metrics."""
     try:
         rows = await db.metrics_human_per_day(days)
         return {"success": True, "days": days, "items": rows}
     except Exception as e:
-        logger.error(f"Admin human_per_day error: {e}")
+        logger.error(f"Admin human_per_day error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/admin/soups_groupings", response_model=Dict[str, Any])
-async def admin_soups_groupings(db: DatabaseConnector = Depends(get_db)):
+async def admin_soups_groupings(db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get soups groupings metrics."""
     try:
         data = await db.metrics_soups_groupings()
         return {"success": True, **data}
     except Exception as e:
-        logger.error(f"Admin soups_groupings error: {e}")
+        logger.error(f"Admin soups_groupings error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/admin/pending_groupings", response_model=Dict[str, Any])
-async def admin_pending_groupings(db: DatabaseConnector = Depends(get_db)):
+async def admin_pending_groupings(db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get pending groupings metrics."""
     try:
         data = await db.metrics_pending_groupings()
         return {"success": True, **data}
     except Exception as e:
-        logger.error(f"Admin pending_groupings error: {e}")
+        logger.error(f"Admin pending_groupings error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/admin/served_metrics", response_model=Dict[str, Any])
-async def admin_served_metrics(db: DatabaseConnector = Depends(get_db)):
-    """Get Articles Served and Duplicates Served metrics for last 24h and 3h"""
+async def admin_served_metrics(db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Get Articles Served and Duplicates Served metrics for last 24h and 3h."""
     try:
         data = await db.metrics_served_articles()
         return {"success": True, **data}
     except Exception as e:
-        logger.error(f"Admin served_metrics error: {e}")
+        logger.error(f"Admin served_metrics error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -874,8 +894,12 @@ async def admin_page(request: Request):
     return templates.TemplateResponse("admin.html", {"request": request})
 
 @app.get("/api/admin/activity_logs", response_model=Dict[str, Any])
-async def admin_activity_logs(limit: int = 100, username: str = None, db: DatabaseConnector = Depends(get_db)):
-    """Get activity logs (admin only)"""
+async def admin_activity_logs(
+    limit: int = 100,
+    username: Optional[str] = None,
+    db: DatabaseConnector = Depends(get_db)
+) -> Dict[str, Any]:
+    """Get activity logs (admin only)."""
     try:
         logs = await db.get_activity_logs(limit, username)
         return {
@@ -885,12 +909,15 @@ async def admin_activity_logs(limit: int = 100, username: str = None, db: Databa
             "filters": {"limit": limit, "username": username}
         }
     except Exception as e:
-        logger.error(f"Admin activity logs error: {e}")
+        logger.error(f"Admin activity logs error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/maintenance/release-expired", response_model=Dict[str, Any])
-async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):
-    """Release tasks that have been assigned but not completed within timeout"""
+async def release_expired_tasks(
+    timeout_minutes: int = 30,
+    db: DatabaseConnector = Depends(get_db)
+) -> Dict[str, Any]:
+    """Release tasks that have been assigned but not completed within timeout."""
     try:
         released_count = await db.release_expired_tasks(timeout_minutes)
         
@@ -901,12 +928,12 @@ async def release_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Error releasing expired tasks: {e}")
+        logger.error(f"Error releasing expired tasks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/tasks/{task_id}/unclaim", response_model=Dict[str, Any])
-async def unclaim_task(task_id: str, db: DatabaseConnector = Depends(get_db)):
-    """Manually release a claimed task (allows users to unclaim if they can't complete it)"""
+async def unclaim_task(task_id: str, db: DatabaseConnector = Depends(get_db)) -> Dict[str, Any]:
+    """Manually release a claimed task (allows users to unclaim if they can't complete it)."""
     try:
         # Release the specific task by setting wf_timestamp_claimed_at to NULL
         update_response = (
@@ -932,15 +959,16 @@ async def unclaim_task(task_id: str, db: DatabaseConnector = Depends(get_db)):
                 "message": "Task not found or already unclaimed"
             }
     except Exception as e:
-        logger.error(f"Error unclaiming task {task_id}: {e}")
+        logger.error(f"Error unclaiming task {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/maintenance/expired-tasks", response_model=Dict[str, Any])
-async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector = Depends(get_db)):
-    """Check how many tasks are currently expired without releasing them"""
+async def check_expired_tasks(
+    timeout_minutes: int = 30,
+    db: DatabaseConnector = Depends(get_db)
+) -> Dict[str, Any]:
+    """Check how many tasks are currently expired without releasing them."""
     try:
-        from datetime import datetime, timezone, timedelta
-        
         # Calculate cutoff time
         cutoff_time = datetime.now(timezone.utc) - timedelta(minutes=timeout_minutes)
         cutoff_iso = cutoff_time.isoformat()
@@ -953,7 +981,7 @@ async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector =
             .eq("extraction_path", 2)
             .eq("dedupe_status", "original")
             .eq("WF_Pre_Check_Complete", True)
-            .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])  # NEW: Only creator or unknown
+            .in_("WF_Patch_Duplicate_Syndicate", ["creator", "unknown"])
             .is_("WF_Extraction_Complete", "null")
             .not_.is_("wf_timestamp_claimed_at", "null")  # Must be claimed
             .lt("wf_timestamp_claimed_at", cutoff_iso)    # Claimed before cutoff
@@ -970,26 +998,27 @@ async def check_expired_tasks(timeout_minutes: int = 30, db: DatabaseConnector =
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
     except Exception as e:
-        logger.error(f"Error checking expired tasks: {e}")
+        logger.error(f"Error checking expired tasks: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 # Background task to periodically release expired tasks
 async def periodic_maintenance():
-    """Background task to release expired tasks every 5 minutes"""
+    """Background task to release expired tasks periodically."""
     while True:
         try:
             if db_connector:
-                # Release tasks claimed for more than 15 minutes (reduced from 30)
-                released = await db_connector.release_expired_tasks(15)
+                released = await db_connector.release_expired_tasks(TASK_EXPIRY_TIMEOUT_MINUTES)
                 if released > 0:
-                    logger.info(f"🔓 MAINTENANCE: Released {released} expired tasks (claimed >15 min ago)")
+                    logger.info(
+                        f"🔓 MAINTENANCE: Released {released} expired tasks "
+                        f"(claimed >{TASK_EXPIRY_TIMEOUT_MINUTES} min ago)"
+                    )
                 else:
-                    logger.debug(f"✓ MAINTENANCE: No expired tasks to release")
+                    logger.debug("✓ MAINTENANCE: No expired tasks to release")
         except Exception as e:
             logger.error(f"❌ MAINTENANCE ERROR: {e}")
         
-        # Wait 5 minutes (reduced from 10)
-        await asyncio.sleep(300)
+        await asyncio.sleep(MAINTENANCE_INTERVAL_SECONDS)
 
 if __name__ == "__main__":
     # For development - use environment variables

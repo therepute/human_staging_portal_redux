@@ -5,7 +5,6 @@ Imports the FastAPI app from Human_Staging_Portal module
 """
 # Import the FastAPI app from the Human_Staging_Portal module
 from Human_Staging_Portal.main_api import app
-
 # Export the app for uvicorn
 __all__ = ['app']
 
